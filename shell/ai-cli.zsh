@@ -136,7 +136,7 @@ $(_ai_safety_suffix)"
 
   _ai_append_round_header "$sdir/full.log" "new" 1 "$full_prompt"
 
-  codex exec ${=skip_flag} ${=extra} -o "$sdir/last.txt" "$full_prompt" 2>&1 | tee -a "$sdir/full.log"
+  codex exec ${=skip_flag} ${=extra} -o "$sdir/last.txt" "$full_prompt" </dev/null 2>&1 | tee -a "$sdir/full.log"
 
   local sid=$(grep -oE 'session id: [0-9a-f-]+' "$sdir/full.log" | head -1 | awk '{print $3}')
   if [[ -z "$sid" ]]; then
@@ -179,7 +179,7 @@ $(_ai_safety_suffix)"
 
   _ai_append_round_header "$sdir/full.log" "resume" "$round" "$full_prompt"
 
-  codex exec resume ${=skip_flag} -o "$sdir/last.txt" "$sid" "$full_prompt" 2>&1 | tee -a "$sdir/full.log"
+  codex exec resume ${=skip_flag} -o "$sdir/last.txt" "$sid" "$full_prompt" </dev/null 2>&1 | tee -a "$sdir/full.log"
 
   echo ""
   echo "✓ codex 'codex-$name' Round $round 完成"
@@ -226,7 +226,7 @@ $(_ai_safety_suffix)"
 
   _ai_append_round_header "$sdir/full.log" "new" 1 "$full_prompt"
 
-  claude -p --session-id "$sid" ${=extra} "$full_prompt" 2>&1 | tee -a "$sdir/full.log" | tee "$sdir/last.txt"
+  claude -p --session-id "$sid" ${=extra} "$full_prompt" </dev/null 2>&1 | tee -a "$sdir/full.log" | tee "$sdir/last.txt"
 
   echo ""
   echo "✓ claude session 'claude-$name' 已创建(sid: ${sid:0:8}…)"
@@ -259,7 +259,7 @@ $(_ai_safety_suffix)"
 
   _ai_append_round_header "$sdir/full.log" "resume" "$round" "$full_prompt"
 
-  claude -p -r "$sid" "$full_prompt" 2>&1 | tee -a "$sdir/full.log" | tee "$sdir/last.txt"
+  claude -p -r "$sid" "$full_prompt" </dev/null 2>&1 | tee -a "$sdir/full.log" | tee "$sdir/last.txt"
 
   echo ""
   echo "✓ claude 'claude-$name' Round $round 完成"
