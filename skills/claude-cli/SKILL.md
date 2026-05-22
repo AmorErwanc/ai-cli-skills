@@ -154,7 +154,8 @@ cat .ai-sessions/claude-plan-{a,b,c}/last.txt
 | `❌ desc 至少 15 字符` | desc 写长 |
 | `❌ name 必须是 kebab-case` | 小写字母+数字+连字符 |
 | `command not found: ai-claude` | `source ~/.config/zsh/ai-cli.zsh` |
-| claude 卡很久不返回 | Opus 4.7 1M + xhigh,长任务 1-5 分钟正常 |
+| claude 卡很久不返回 | Opus 4.7 1M + xhigh,长任务 1-5 分钟正常;**5 分钟无输出 wrapper 会自动 kill** |
+| `⚠ claude exit code: 137` | **watchdog 自动 kill**(5 分钟无输出),诊断包在 `~/.ai-sessions-incidents/`,用 `ai-incidents` 查看 |
 | 输出疑似不完整 | `-p` 默认 text format 只输出 final message;看过程读 `full.log` |
 
 ## 文件结构

@@ -30,7 +30,7 @@ codex/claude 没装也能装本工具,只是不能跑——装完任何一个就
 
 ## 用法速览
 
-### 6 个命令
+### 7 个命令
 
 | 命令 | 作用 |
 |---|---|
@@ -40,6 +40,7 @@ codex/claude 没装也能装本工具,只是不能跑——装完任何一个就
 | `ai-claude-c <name> "<prompt>"` | 续聊 claude session |
 | `ai-sessions` | 列出当前主项目所有 session |
 | `ai-rm <name>` | 删除某 session(短名歧义时用完整 `codex-<name>` / `claude-<name>`) |
+| `ai-incidents [<id>]` | 列出 / 查看 watchdog 抓的 hang 诊断包(详见下文 Watchdog) |
 
 ### 参数
 
@@ -84,6 +85,41 @@ ai-rm add-cache
 **永远落在主项目根**——通过 `git rev-parse --git-common-dir` 定位,worktree 里跑也回到主项目,worktree 删除不丢 session。
 
 `.ai-sessions/` 自带 `.gitignore`(内容 `*`),不会被 commit。
+
+## Watchdog:防 codex/claude 卡死
+
+外部 CLI(尤其 codex)在并发或长 prompt 下偶发会卡死(CPU 0、stdout 没输出)。wrapper 自带 watchdog:
+
+- **60s 无新输出 → 警告**:终端铃 + macOS notification
+- **5 分钟无新输出 → 自动 kill + 抓诊断包**
+
+诊断包存在 `~/.ai-sessions-incidents/<时间戳>-<cli>-<name>/`,包含:
+
+| 文件 | 内容 |
+|---|---|
+| `summary.md` | 时间、CLI、name、原因、PID、session 路径 |
+| `stack.sample.txt` | macOS `sample` 抓的进程调用栈(看卡在哪个 syscall) |
+| `lsof.txt` / `lsof-net.txt` | 打开的 fd / 网络连接 |
+| `process.txt` | CPU TIME、wchan、状态 |
+| `concurrent.txt` | 当时活跃的其他 ai-codex/ai-claude(查 race) |
+| `env.txt` | codex/claude/node 版本、macOS 版本、内存 |
+| `prompt-info.txt` | 卡死时的 prompt 长度 + 前 800 字符 |
+| `full.log.snapshot` | 卡死时 log 完整快照 |
+
+**查看 / 管理 incidents**:
+
+```bash
+ai-incidents                  # 列出全部
+ai-incidents <id 关键字>      # 看详情
+rm -rf ~/.ai-sessions-incidents/<id>   # 清理某个
+```
+
+**调整阈值**(环境变量,默认值合理大多场景不用动):
+```bash
+export AI_WATCHDOG_INTERVAL=30      # 检查间隔(秒)
+export AI_WATCHDOG_WARN_CHECKS=2    # 多少次无更新 → warn
+export AI_WATCHDOG_KILL_CHECKS=10   # 多少次无更新 → kill
+```
 
 ## 文件分工
 

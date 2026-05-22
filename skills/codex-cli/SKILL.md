@@ -244,10 +244,22 @@ ai-codex add-cache "<desc>" "<prompt>"
 | `❌ desc 至少 15 字符` | desc 写长,讲清做什么 |
 | `❌ name 必须是 kebab-case` | 小写字母+数字+连字符 |
 | `command not found: ai-codex` | `source ~/.config/zsh/ai-cli.zsh` 或检查 `~/.zshrc` |
-| codex 卡很久不返回 | gpt-5.5 + xhigh + 500K,长任务 1-3 分钟正常 |
+| codex 卡很久不返回 | gpt-5.5 + xhigh + 500K,长任务 1-3 分钟正常;**5 分钟无输出 wrapper 会自动 kill** |
+| `⚠ codex exit code: 137` | **watchdog 自动 kill**(5 分钟无输出),诊断包在 `~/.ai-sessions-incidents/`,用 `ai-incidents` 查看 |
 | `⚠ 无法抓取 session id` | 看 `.ai-sessions/codex-x/full.log` 排查 |
 | worktree 已存在 | `git worktree list` 看占用,先 `git worktree remove` |
 | merge 冲突 | 进 worktree 解冲突再 commit,或放弃 worktree 重做 |
+
+## Watchdog(自动防卡死,你通常不用管)
+
+wrapper 自带 watchdog:60s 无新输出警告,5 分钟无新输出自动 kill + 收集诊断。**正常使用不会触发**。如果用户报告"codex 卡很久",或者 ai-codex 返回 exit code 137,跑 `ai-incidents` 看诊断:
+
+```bash
+ai-incidents                  # 列全部
+ai-incidents <关键字>         # 看某次详情
+```
+
+诊断包路径在 `~/.ai-sessions-incidents/<时间戳>-<cli>-<name>/`,含 `stack.sample.txt`(Node + Rust 调用栈)等。可以直接 `cat` 读分析,或者整包发给用户/上游。
 
 ## 文件结构(进阶,需要查历史时看)
 

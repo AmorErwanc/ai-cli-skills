@@ -1,10 +1,18 @@
 # AI CLI wrapper: 用 claude/codex CLI 起 session、续聊、查看、删除
 # 默认走 ~/.codex/config.toml 和 ~/.claude/settings.json
 # 数据存放: <主项目根>/.ai-sessions/<cli>-<name>/{sid,desc,last.txt,full.log}
+#
+# Watchdog: 每 30s 检查 full.log 大小,60s 无新输出 → warn,5 分钟 → 自动 kill + 记 incident
+# Incidents: ~/.ai-sessions-incidents/<ts>-<cli>-<name>/ 包含 summary/stack/lsof/env 等
 
 # 脚本自身路径(每个公共函数会用,在 _ai_* 内部函数丢失时 re-source 自己)
 typeset -g _AI_CLI_SELF="${(%):-%x}"
 [[ -z "$_AI_CLI_SELF" || ! -f "$_AI_CLI_SELF" ]] && _AI_CLI_SELF="$HOME/.config/zsh/ai-cli.zsh"
+
+# Watchdog 参数(环境变量可覆盖)
+typeset -g _AI_WD_INTERVAL="${AI_WATCHDOG_INTERVAL:-30}"   # 检查间隔(秒)
+typeset -g _AI_WD_WARN="${AI_WATCHDOG_WARN_CHECKS:-2}"     # 多少次无更新→ warn(默认 2*30=60s)
+typeset -g _AI_WD_KILL="${AI_WATCHDOG_KILL_CHECKS:-10}"    # 多少次无更新→ kill(默认 10*30=5min)
 
 # ============================================================
 # 内部辅助函数(_ 前缀)
@@ -14,13 +22,11 @@ _ai_session_root() {
   # 返回应该放 .ai-sessions/ 的目录(永远是主项目根,worktree 内共享主项目)
   if git rev-parse --git-dir &>/dev/null; then
     local common_dir=$(git rev-parse --git-common-dir 2>/dev/null)
-    # 主 worktree: common_dir = ".git" 或 "<repo>/.git";worktree: 绝对路径
     case "$common_dir" in
-      /*) dirname "$common_dir" ;;          # 绝对路径(从 worktree 跑)
-      *)  echo "$(cd "$(dirname "$common_dir")" && pwd)" ;;  # 相对路径
+      /*) dirname "$common_dir" ;;
+      *)  echo "$(cd "$(dirname "$common_dir")" && pwd)" ;;
     esac
   else
-    # 非 git 仓库,用当前目录
     echo "$PWD"
   fi
 }
@@ -92,6 +98,224 @@ _ai_append_round_header() {
   } >> "$logf"
 }
 
+# 杀进程树:用 ps + awk 一次性找所有后代,SIGKILL 杀光
+_ai_kill_tree() {
+  local root=$1
+  # 用 printf 而非 print 避免换行(awk -v 不支持多行 known 参数)
+  local known_pids="$root"
+  local iter=0
+  while (( iter < 10 )); do
+    iter=$((iter + 1))
+    local new_pids=$(ps -A -o pid,ppid 2>/dev/null | awk -v known="$known_pids" '
+      BEGIN {
+        n = split(known, arr, " ")
+        for (i = 1; i <= n; i++) parent[arr[i]] = 1
+      }
+      NR > 1 {
+        if (parent[$2] && !parent[$1]) {
+          printf "%s ", $1
+          parent[$1] = 1
+        }
+      }
+    ')
+    if [[ -z "${new_pids// /}" ]]; then
+      break
+    fi
+    known_pids="$known_pids $new_pids"
+  done
+  # 一次性 SIGKILL 杀光
+  echo $known_pids | xargs kill -KILL 2>/dev/null
+  return 0
+}
+
+# BFS 子进程树,找像 codex/claude 的实际 CLI 进程 PID(不是 zsh wrapper)
+_ai_find_cli_pid() {
+  local parent_pid="$1"
+  local pids=$(pgrep -P $parent_pid 2>/dev/null)
+  for p in ${(z)pids}; do
+    local cmd=$(ps -p $p -o command= 2>/dev/null)
+    if [[ "$cmd" == *codex* ]] || [[ "$cmd" == *claude* ]]; then
+      echo $p
+      return 0
+    fi
+    local grandchild=$(_ai_find_cli_pid $p)
+    [[ -n "$grandchild" ]] && { echo $grandchild; return 0; }
+  done
+  return 1
+}
+
+# 收集 incident 诊断包到 ~/.ai-sessions-incidents/<ts>-<cli>-<name>/
+_ai_capture_incident() {
+  local cli_pid="$1" sdir="$2" cli="$3" name="$4" reason="$5"
+  # reason: "warn" 或 "kill"
+
+  local ts=$(date '+%Y-%m-%dT%H-%M-%S')
+  local incident_dir="$HOME/.ai-sessions-incidents/${ts}-${cli}-${name}"
+  mkdir -p "$incident_dir"
+
+  # === summary.md ===
+  {
+    echo "# Incident: $cli-$name @ $ts"
+    echo ""
+    echo "- **触发原因**: $reason ($([ "$reason" = "warn" ] && echo "60s 无新输出" || echo "5 分钟无新输出,已 kill"))"
+    echo "- **CLI 进程 PID**: $cli_pid"
+    echo "- **CLI 是否还活着**: $(kill -0 $cli_pid 2>/dev/null && echo yes || echo no)"
+    echo "- **cwd**: $PWD"
+    echo "- **session dir**: $sdir"
+    echo "- **session sid**: $(cat "$sdir/sid" 2>/dev/null || echo '<未生成>')"
+    echo "- **full.log 大小**: $(wc -c < "$sdir/full.log" 2>/dev/null | tr -d ' ') bytes"
+    echo "- **诊断目录**: $incident_dir"
+    echo ""
+    echo "## 发我诊断"
+    echo "\`\`\`bash"
+    echo "tar czf /tmp/incident.tar.gz -C \$HOME/.ai-sessions-incidents '$(basename $incident_dir)'"
+    echo "\`\`\`"
+  } > "$incident_dir/summary.md"
+
+  # === process.txt ===
+  if kill -0 $cli_pid 2>/dev/null; then
+    ps -p $cli_pid -o pid,ppid,stat,etime,time,rss,wchan,command > "$incident_dir/process.txt" 2>&1
+  else
+    echo "进程已退出,无法获取 ps 信息" > "$incident_dir/process.txt"
+  fi
+
+  # === concurrent.txt(总是收集,看 race) ===
+  {
+    echo "=== 当时活跃的 ai-codex / ai-claude 命令 ==="
+    pgrep -fl 'codex exec|claude -p' 2>/dev/null || echo "(无)"
+  } > "$incident_dir/concurrent.txt"
+
+  # === env.txt(总是收集,看版本) ===
+  # 用 timeout 包裹外部 CLI 调用,防止 codex/claude --version 自身卡死把 watchdog 也带卡
+  {
+    echo "=== Tool Versions ==="
+    echo "codex: $(timeout 3 codex --version 2>&1 | tr '\n' ';' | head -c 200)"
+    echo "claude: $(timeout 3 claude --version 2>&1 | tr '\n' ';' | head -c 200)"
+    echo "node: $(timeout 3 node --version 2>&1)"
+    echo ""
+    echo "=== System ==="
+    echo "macOS: $(sw_vers -productVersion 2>/dev/null)"
+    echo "kernel: $(uname -r)"
+    echo "uptime: $(uptime)"
+    echo ""
+    echo "=== Memory ==="
+    vm_stat 2>/dev/null | head -8
+    echo ""
+    echo "=== Disk(home)==="
+    df -h "$HOME" 2>/dev/null | head -2
+  } > "$incident_dir/env.txt"
+
+  # === kill 时的重诊断(sample / lsof) ===
+  if [[ "$reason" == "kill" ]]; then
+    # 用真正的 CLI 进程(找子进程树里的 codex/claude),sample 才有意义
+    local sample_pid=$(_ai_find_cli_pid $cli_pid)
+    [[ -z "$sample_pid" ]] && sample_pid=$cli_pid
+
+    if kill -0 $sample_pid 2>/dev/null; then
+      # sample / lsof 都加 timeout 兜底
+      timeout 8 sample $sample_pid 3 -file "$incident_dir/stack.sample.txt" 2>&1 | head -5 > "$incident_dir/.sample.meta" 2>&1
+      timeout 5 lsof -p $sample_pid > "$incident_dir/lsof.txt" 2>&1
+      timeout 5 lsof -p $sample_pid -i > "$incident_dir/lsof-net.txt" 2>&1
+    else
+      echo "进程已退出,无法 sample/lsof" > "$incident_dir/stack.sample.txt"
+    fi
+
+    # 进程树(macOS 无 pstree,用 ps grep)
+    ps -ef 2>/dev/null | grep -E "codex|claude|$cli_pid" | grep -v grep > "$incident_dir/pstree.txt"
+
+    # prompt-info(最后一轮的 prompt 头 800 字符)
+    if [[ -f "$sdir/full.log" ]]; then
+      local prompt_chars=$(awk '/^\[user\]/{flag=1; chars=0; next} /^\[output\]/{flag=0} flag {print}' "$sdir/full.log" | tail -100 | wc -c | tr -d ' ')
+      {
+        echo "prompt 字符数(估算): $prompt_chars"
+        echo ""
+        echo "=== 最后一轮 prompt 头 800 字符 ==="
+        awk '/^\[user\]/{flag=1; next} /^\[output\]/{flag=0} flag' "$sdir/full.log" | tail -50 | head -20 | cut -c1-800
+      } > "$incident_dir/prompt-info.txt"
+    fi
+
+    # full.log 快照
+    cp "$sdir/full.log" "$incident_dir/full.log.snapshot" 2>/dev/null
+  fi
+
+  echo "" >&2
+  echo "📋 Incident 已记录: $incident_dir" >&2
+  if [[ "$reason" == "kill" ]]; then
+    echo "   发我诊断: tar czf /tmp/incident.tar.gz -C ~/.ai-sessions-incidents '$(basename $incident_dir)'" >&2
+  fi
+}
+
+# Watchdog: 后台监控 full.log mtime,卡死时 warn / kill + capture incident
+_ai_watchdog() {
+  local pipeline_pid="$1" sdir="$2" cli="$3" name="$4"
+  local logf="$sdir/full.log"
+  local stale_count=0 last_mtime=0 warned=0
+
+  while kill -0 $pipeline_pid 2>/dev/null; do
+    sleep $_AI_WD_INTERVAL
+
+    if ! kill -0 $pipeline_pid 2>/dev/null; then
+      break
+    fi
+
+    local cur_mtime=$(stat -f '%m' "$logf" 2>/dev/null || echo 0)
+
+    if (( cur_mtime == last_mtime )); then
+      stale_count=$((stale_count + 1))
+
+      # Warn
+      if (( stale_count == _AI_WD_WARN )) && (( warned == 0 )); then
+        warned=1
+        local secs=$((_AI_WD_INTERVAL * _AI_WD_WARN))
+        echo "" >&2
+        echo "⚠ ai-${cli} '$name' 已 ${secs}s 无新输出,可能卡死(到 $((_AI_WD_INTERVAL * _AI_WD_KILL))s 自动 kill)" >&2
+        echo -ne "\a" >&2
+        osascript -e "display notification \"$cli '$name' 已 ${secs}s 无输出\" with title \"⚠ ai-cli 疑似卡死\"" 2>/dev/null
+      fi
+
+      # Kill
+      if (( stale_count >= _AI_WD_KILL )); then
+        local secs=$((_AI_WD_INTERVAL * _AI_WD_KILL))
+        echo "" >&2
+        echo "❌ ai-${cli} '$name' 已 ${secs}s 无新输出,记录 incident 并自动终止" >&2
+        echo -ne "\a\a" >&2
+
+        # 找真正的 CLI PID 抓诊断
+        local real_pid=$(_ai_find_cli_pid $pipeline_pid)
+        [[ -z "$real_pid" ]] && real_pid=$pipeline_pid
+
+        # 先 touch marker(让主 shell 立刻能退出 polling,不被后续 capture 慢操作拖累)
+        touch "$sdir/.killed-by-watchdog"
+
+        # 用子 shell 隔离 incident 收集(避免内部子进程不 reap 影响后续 wait)
+        ( _ai_capture_incident "$real_pid" "$sdir" "$cli" "$name" "kill" </dev/null >&2 2>&1 ) &
+        local cap_pid=$!
+        # 给 capture 最多 15 秒(防 codex/claude --version 之类卡死把 watchdog 也带卡)
+        local cap_wait=0
+        while ps -p $cap_pid >/dev/null 2>&1 && (( cap_wait < 30 )); do
+          sleep 0.5
+          cap_wait=$((cap_wait + 1))
+        done
+        (( cap_wait >= 30 )) && {
+          echo "⚠ capture 超时(15s),强制结束" >&2
+          kill -KILL $cap_pid 2>/dev/null
+          _ai_kill_tree $cap_pid
+        }
+
+        # 杀整棵进程树
+        _ai_kill_tree $pipeline_pid
+
+        osascript -e "display notification \"$cli '$name' 已 kill,诊断包已存\" with title \"❌ ai-cli 已终止\"" 2>/dev/null
+        return 1
+      fi
+    else
+      stale_count=0
+      warned=0
+      last_mtime=$cur_mtime
+    fi
+  done
+}
+
 # ============================================================
 # 公共命令
 # ============================================================
@@ -136,7 +360,40 @@ $(_ai_safety_suffix)"
 
   _ai_append_round_header "$sdir/full.log" "new" 1 "$full_prompt"
 
-  codex exec ${=skip_flag} ${=extra} -o "$sdir/last.txt" "$full_prompt" </dev/null 2>&1 | tee -a "$sdir/full.log"
+  # 启动 codex 在子 shell 后台(watchdog 监控 sdir/full.log)
+  (
+    codex exec ${=skip_flag} ${=extra} -o "$sdir/last.txt" "$full_prompt" </dev/null 2>&1 | tee -a "$sdir/full.log"
+  ) &
+  local pipeline_pid=$!
+
+  _ai_watchdog $pipeline_pid "$sdir" codex "$name" &
+  local wd_pid=$!
+
+  # Polling 等 pipeline 自然死或被 watchdog kill
+  # 用 ps -p 而非 wait/kill -0,绕开 zsh job control 在子 shell 上的不确定行为
+  while ps -p $pipeline_pid >/dev/null 2>&1 && [[ ! -f "$sdir/.killed-by-watchdog" ]]; do
+    sleep 0.5
+  done
+  local exit_code=0
+  if [[ -f "$sdir/.killed-by-watchdog" ]]; then
+    exit_code=137
+    rm -f "$sdir/.killed-by-watchdog"
+  fi
+
+  # 清理 watchdog(它可能还活着,kill 它)
+  kill -KILL $wd_pid 2>/dev/null
+  # 等 wd_pid 真正死(ps -p)
+  local wd_wait=0
+  while ps -p $wd_pid >/dev/null 2>&1 && (( wd_wait < 6 )); do
+    sleep 0.5
+    wd_wait=$((wd_wait + 1))
+  done
+
+  if (( exit_code != 0 )); then
+    echo ""
+    echo "⚠ codex exit code: $exit_code(可能被 watchdog kill 或其他错误)"
+    return $exit_code
+  fi
 
   local sid=$(grep -oE 'session id: [0-9a-f-]+' "$sdir/full.log" | head -1 | awk '{print $3}')
   if [[ -z "$sid" ]]; then
@@ -179,7 +436,39 @@ $(_ai_safety_suffix)"
 
   _ai_append_round_header "$sdir/full.log" "resume" "$round" "$full_prompt"
 
-  codex exec resume ${=skip_flag} -o "$sdir/last.txt" "$sid" "$full_prompt" </dev/null 2>&1 | tee -a "$sdir/full.log"
+  (
+    codex exec resume ${=skip_flag} -o "$sdir/last.txt" "$sid" "$full_prompt" </dev/null 2>&1 | tee -a "$sdir/full.log"
+  ) &
+  local pipeline_pid=$!
+
+  _ai_watchdog $pipeline_pid "$sdir" codex "$name" &
+  local wd_pid=$!
+
+  # Polling 等 pipeline 自然死或被 watchdog kill
+  # 用 ps -p 而非 wait/kill -0,绕开 zsh job control 在子 shell 上的不确定行为
+  while ps -p $pipeline_pid >/dev/null 2>&1 && [[ ! -f "$sdir/.killed-by-watchdog" ]]; do
+    sleep 0.5
+  done
+  local exit_code=0
+  if [[ -f "$sdir/.killed-by-watchdog" ]]; then
+    exit_code=137
+    rm -f "$sdir/.killed-by-watchdog"
+  fi
+
+  # 清理 watchdog(它可能还活着,kill 它)
+  kill -KILL $wd_pid 2>/dev/null
+  # 等 wd_pid 真正死(ps -p)
+  local wd_wait=0
+  while ps -p $wd_pid >/dev/null 2>&1 && (( wd_wait < 6 )); do
+    sleep 0.5
+    wd_wait=$((wd_wait + 1))
+  done
+
+  if (( exit_code != 0 )); then
+    echo ""
+    echo "⚠ codex exit code: $exit_code"
+    return $exit_code
+  fi
 
   echo ""
   echo "✓ codex 'codex-$name' Round $round 完成"
@@ -226,7 +515,39 @@ $(_ai_safety_suffix)"
 
   _ai_append_round_header "$sdir/full.log" "new" 1 "$full_prompt"
 
-  claude -p --session-id "$sid" ${=extra} "$full_prompt" </dev/null 2>&1 | tee -a "$sdir/full.log" | tee "$sdir/last.txt"
+  (
+    claude -p --session-id "$sid" ${=extra} "$full_prompt" </dev/null 2>&1 | tee -a "$sdir/full.log" | tee "$sdir/last.txt"
+  ) &
+  local pipeline_pid=$!
+
+  _ai_watchdog $pipeline_pid "$sdir" claude "$name" &
+  local wd_pid=$!
+
+  # Polling 等 pipeline 自然死或被 watchdog kill
+  # 用 ps -p 而非 wait/kill -0,绕开 zsh job control 在子 shell 上的不确定行为
+  while ps -p $pipeline_pid >/dev/null 2>&1 && [[ ! -f "$sdir/.killed-by-watchdog" ]]; do
+    sleep 0.5
+  done
+  local exit_code=0
+  if [[ -f "$sdir/.killed-by-watchdog" ]]; then
+    exit_code=137
+    rm -f "$sdir/.killed-by-watchdog"
+  fi
+
+  # 清理 watchdog(它可能还活着,kill 它)
+  kill -KILL $wd_pid 2>/dev/null
+  # 等 wd_pid 真正死(ps -p)
+  local wd_wait=0
+  while ps -p $wd_pid >/dev/null 2>&1 && (( wd_wait < 6 )); do
+    sleep 0.5
+    wd_wait=$((wd_wait + 1))
+  done
+
+  if (( exit_code != 0 )); then
+    echo ""
+    echo "⚠ claude exit code: $exit_code"
+    return $exit_code
+  fi
 
   echo ""
   echo "✓ claude session 'claude-$name' 已创建(sid: ${sid:0:8}…)"
@@ -259,7 +580,39 @@ $(_ai_safety_suffix)"
 
   _ai_append_round_header "$sdir/full.log" "resume" "$round" "$full_prompt"
 
-  claude -p -r "$sid" "$full_prompt" </dev/null 2>&1 | tee -a "$sdir/full.log" | tee "$sdir/last.txt"
+  (
+    claude -p -r "$sid" "$full_prompt" </dev/null 2>&1 | tee -a "$sdir/full.log" | tee "$sdir/last.txt"
+  ) &
+  local pipeline_pid=$!
+
+  _ai_watchdog $pipeline_pid "$sdir" claude "$name" &
+  local wd_pid=$!
+
+  # Polling 等 pipeline 自然死或被 watchdog kill
+  # 用 ps -p 而非 wait/kill -0,绕开 zsh job control 在子 shell 上的不确定行为
+  while ps -p $pipeline_pid >/dev/null 2>&1 && [[ ! -f "$sdir/.killed-by-watchdog" ]]; do
+    sleep 0.5
+  done
+  local exit_code=0
+  if [[ -f "$sdir/.killed-by-watchdog" ]]; then
+    exit_code=137
+    rm -f "$sdir/.killed-by-watchdog"
+  fi
+
+  # 清理 watchdog(它可能还活着,kill 它)
+  kill -KILL $wd_pid 2>/dev/null
+  # 等 wd_pid 真正死(ps -p)
+  local wd_wait=0
+  while ps -p $wd_pid >/dev/null 2>&1 && (( wd_wait < 6 )); do
+    sleep 0.5
+    wd_wait=$((wd_wait + 1))
+  done
+
+  if (( exit_code != 0 )); then
+    echo ""
+    echo "⚠ claude exit code: $exit_code"
+    return $exit_code
+  fi
 
   echo ""
   echo "✓ claude 'claude-$name' Round $round 完成"
@@ -293,7 +646,6 @@ ai-sessions() {
       fi
     fi
     local updated="?"
-    # 用 full.log 的 mtime 表示"最后活跃时间"(没有就回退到 sid)
     local probe="$sdir/full.log"
     [[ -f "$probe" ]] || probe="$sdir/sid"
     if [[ -f "$probe" ]]; then
@@ -337,9 +689,8 @@ ai-rm() {
       echo "请显式: ai-rm codex-$input 或 ai-rm claude-$input"
       return 1
     fi
-    # zsh: 数组下标从 1
     sdir="${matches[1]}"
-    [[ -z "$sdir" || ! -d "$sdir" ]] && sdir="${matches[0]}"  # bash fallback
+    [[ -z "$sdir" || ! -d "$sdir" ]] && sdir="${matches[0]}"
   fi
 
   local desc=""
@@ -348,4 +699,70 @@ ai-rm() {
   rm -rf "$sdir"
   echo "✓ 已删除: $(basename "$sdir")"
   [[ -n "$desc" ]] && echo "   desc: $desc"
+}
+
+# 查看 / 管理 incidents
+ai-incidents() {
+  local root="$HOME/.ai-sessions-incidents"
+
+  # 列出全部
+  if [[ $# -eq 0 ]]; then
+    if [[ ! -d "$root" ]] || (( $(ls "$root" 2>/dev/null | wc -l) == 0 )); then
+      echo "无 incident($root 为空或不存在)"
+      return 0
+    fi
+
+    local fmt="%-30s  %-8s  %-30s  %s\n"
+    printf "$fmt" "INCIDENT" "CLI" "NAME" "REASON"
+    printf -- "%.0s-" {1..90}; echo
+
+    for d in "$root"/*/; do
+      [[ -d "$d" ]] || continue
+      local base=$(basename "$d")
+      # base 格式: 2026-05-22T17-11-codex-task-name
+      local ts="${base:0:19}"        # 2026-05-22T17-11-22(到秒)
+      local rest="${base:20}"         # codex-task-name
+      local cli="${rest%%-*}"
+      local name="${rest#*-}"
+      local reason="-"
+      [[ -f "$d/summary.md" ]] && reason=$(grep -oE '触发原因\*\*: [a-z]+' "$d/summary.md" | awk '{print $NF}')
+      printf "$fmt" "$ts" "$cli" "${name:0:30}" "$reason"
+    done
+    echo ""
+    echo "查看详情:  ai-incidents <incident-id 关键字>"
+    echo "全部清理:  rm -rf $root"
+    return 0
+  fi
+
+  # 看详情
+  local query="$1"
+  local matches=()
+  for d in "$root"/*/; do
+    [[ -d "$d" ]] || continue
+    [[ "$(basename "$d")" == *"$query"* ]] && matches+=("$d")
+  done
+
+  if (( ${#matches[@]} == 0 )); then
+    echo "❌ 未找到匹配 '$query' 的 incident"
+    return 1
+  fi
+  if (( ${#matches[@]} > 1 )); then
+    echo "⚠ 匹配 '$query' 的有多个,请精确:"
+    for m in "${matches[@]}"; do echo "   $(basename "$m")"; done
+    return 1
+  fi
+
+  local d="${matches[1]}"
+  [[ -z "$d" || ! -d "$d" ]] && d="${matches[0]}"
+
+  echo "📋 Incident: $(basename "$d")"
+  echo "   路径: $d"
+  echo ""
+  cat "$d/summary.md" 2>/dev/null
+  echo ""
+  echo "=== 文件清单 ==="
+  ls -la "$d"
+  echo ""
+  echo "发我诊断的命令:"
+  echo "  tar czf /tmp/incident.tar.gz -C $root '$(basename "$d")'"
 }
