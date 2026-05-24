@@ -766,3 +766,18 @@ ai-incidents() {
   echo "发我诊断的命令:"
   echo "  tar czf /tmp/incident.tar.gz -C $root '$(basename "$d")'"
 }
+
+# 一键更新 ai-cli-skills 到最新版
+ai-update() {
+  echo "📦 拉取最新版 ai-cli-skills..."
+  echo ""
+  if curl -fsSL https://raw.githubusercontent.com/AmorErwanc/ai-cli-skills/main/install.sh | bash; then
+    echo ""
+    echo "✓ 更新完成"
+    echo "  下一步: source ~/.zshrc 或重启终端,新版本生效"
+  else
+    echo ""
+    echo "❌ 更新失败,检查网络或 GitHub 是否可访问"
+    return 1
+  fi
+}

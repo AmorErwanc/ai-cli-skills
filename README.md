@@ -4,8 +4,9 @@
 
 让 Claude Code 调外部 AI 干活时,能像调内部工具一样自然——给个 name 起 session,改完文件 commit 在 worktree,审完 merge 回主分支。
 
-## 安装
+## 安装 / 更新 / 卸载
 
+**初次安装**:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/AmorErwanc/ai-cli-skills/main/install.sh | bash
 ```
@@ -19,6 +20,16 @@ bash install.sh
 
 装完**重启终端**,跑 `ai-sessions` 验证。
 
+**已装用户更新到最新版**(等同重跑 install.sh,但命令短):
+```bash
+ai-update
+```
+
+**卸载**:
+```bash
+curl -fsSL https://raw.githubusercontent.com/AmorErwanc/ai-cli-skills/main/uninstall.sh | bash
+```
+
 ### 依赖
 
 - `zsh`(macOS 默认就是)
@@ -30,7 +41,7 @@ codex/claude 没装也能装本工具,只是不能跑——装完任何一个就
 
 ## 用法速览
 
-### 7 个命令
+### 8 个命令
 
 | 命令 | 作用 |
 |---|---|
@@ -41,6 +52,7 @@ codex/claude 没装也能装本工具,只是不能跑——装完任何一个就
 | `ai-sessions` | 列出当前主项目所有 session |
 | `ai-rm <name>` | 删除某 session(短名歧义时用完整 `codex-<name>` / `claude-<name>`) |
 | `ai-incidents [<id>]` | 列出 / 查看 watchdog 抓的 hang 诊断包(详见下文 Watchdog) |
+| `ai-update` | 一键更新到最新版(等同重跑 install.sh) |
 
 ### 参数
 
