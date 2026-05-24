@@ -102,7 +102,7 @@ ai-rm add-cache
 
 外部 CLI(尤其 codex)在并发或长 prompt 下偶发会卡死(CPU 0、stdout 没输出)。wrapper 自带 watchdog:
 
-- **60s 无新输出 → 警告**:终端铃 + macOS notification
+- **120s 无新输出 → 警告**:终端铃 + macOS notification
 - **5 分钟无新输出 → 自动 kill + 抓诊断包**
 
 诊断包存在 `~/.ai-sessions-incidents/<时间戳>-<cli>-<name>/`,包含:
@@ -129,7 +129,7 @@ rm -rf ~/.ai-sessions-incidents/<id>   # 清理某个
 **调整阈值**(环境变量,默认值合理大多场景不用动):
 ```bash
 export AI_WATCHDOG_INTERVAL=30      # 检查间隔(秒)
-export AI_WATCHDOG_WARN_CHECKS=2    # 多少次无更新 → warn
+export AI_WATCHDOG_WARN_CHECKS=4    # 多少次无更新 → warn
 export AI_WATCHDOG_KILL_CHECKS=10   # 多少次无更新 → kill
 ```
 

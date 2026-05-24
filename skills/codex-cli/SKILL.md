@@ -252,7 +252,7 @@ ai-codex add-cache "<desc>" "<prompt>"
 
 ## Watchdog(自动防卡死,你通常不用管)
 
-wrapper 自带 watchdog:60s 无新输出警告,5 分钟无新输出自动 kill + 收集诊断。**正常使用不会触发**。如果用户报告"codex 卡很久",或者 ai-codex 返回 exit code 137,跑 `ai-incidents` 看诊断:
+wrapper 自带 watchdog:120s 无新输出警告,5 分钟无新输出自动 kill + 收集诊断。**正常使用不会触发**。如果用户报告"codex 卡很久",或者 ai-codex 返回 exit code 137,跑 `ai-incidents` 看诊断:
 
 ```bash
 ai-incidents                  # 列全部

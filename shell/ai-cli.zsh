@@ -2,7 +2,7 @@
 # 默认走 ~/.codex/config.toml 和 ~/.claude/settings.json
 # 数据存放: <主项目根>/.ai-sessions/<cli>-<name>/{sid,desc,last.txt,full.log}
 #
-# Watchdog: 每 30s 检查 full.log 大小,60s 无新输出 → warn,5 分钟 → 自动 kill + 记 incident
+# Watchdog: 每 30s 检查 full.log 大小,120s 无新输出 → warn,5 分钟 → 自动 kill + 记 incident
 # Incidents: ~/.ai-sessions-incidents/<ts>-<cli>-<name>/ 包含 summary/stack/lsof/env 等
 
 # 脚本自身路径(每个公共函数会用,在 _ai_* 内部函数丢失时 re-source 自己)
@@ -11,7 +11,7 @@ typeset -g _AI_CLI_SELF="${(%):-%x}"
 
 # Watchdog 参数(环境变量可覆盖)
 typeset -g _AI_WD_INTERVAL="${AI_WATCHDOG_INTERVAL:-30}"   # 检查间隔(秒)
-typeset -g _AI_WD_WARN="${AI_WATCHDOG_WARN_CHECKS:-2}"     # 多少次无更新→ warn(默认 2*30=60s)
+typeset -g _AI_WD_WARN="${AI_WATCHDOG_WARN_CHECKS:-4}"     # 多少次无更新→ warn(默认 4*30=120s)
 typeset -g _AI_WD_KILL="${AI_WATCHDOG_KILL_CHECKS:-10}"    # 多少次无更新→ kill(默认 10*30=5min)
 
 # ============================================================
