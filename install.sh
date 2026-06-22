@@ -47,6 +47,17 @@ else
   echo "⚠  $ZSHRC 不存在,请手动加: source ~/.config/zsh/ai-cli.zsh"
 fi
 
+# === 清理老 ai-* wrapper(从旧版升级过来的老用户会有) ===
+OLD_WRAPPERS=(ai-codex ai-codex-c ai-claude ai-claude-c ai-sessions ai-rm ai-incidents ai-update ai-cli-wrapper)
+CLEANED=0
+for w in "${OLD_WRAPPERS[@]}"; do
+  if [ -f "$HOME/.local/bin/$w" ]; then
+    rm -f "$HOME/.local/bin/$w"
+    CLEANED=$((CLEANED + 1))
+  fi
+done
+[ "$CLEANED" -gt 0 ] && echo "✓ 清理了 $CLEANED 个老 ai-* wrapper(请改用 agent 子命令)"
+
 # === PATH 检测:确保 ~/.local/bin 在 PATH 里(给非交互 shell 用) ===
 # 用 $HOME 而不是 ~ 在 grep 时更稳
 if [ -f "$ZSHRC" ] && ! grep -qE '\.local/bin' "$ZSHRC"; then

@@ -110,10 +110,6 @@ agent ls codex      # 只看 codex
 agent rm add-cache
 ```
 
-### 老命令(3 个月后移除)
-
-老命令 `ai-codex` / `ai-claude` / `ai-codex-c` / `ai-claude-c` / `ai-sessions` / `ai-rm` / `ai-incidents` / `ai-update` 仍可用,调用时会在 stderr 打 deprecation 提示。请逐步迁移到 `agent` 子命令。
-
 ## Session 数据存哪
 
 ```
@@ -143,7 +139,7 @@ agent rm add-cache
 | `stack.sample.txt` | macOS `sample` 抓的进程调用栈(看卡在哪个 syscall) |
 | `lsof.txt` / `lsof-net.txt` | 打开的 fd / 网络连接 |
 | `process.txt` | CPU TIME、wchan、状态 |
-| `concurrent.txt` | 当时活跃的其他 ai-codex/ai-claude(查 race) |
+| `concurrent.txt` | 当时活跃的其他 codex/claude 进程(查 race) |
 | `env.txt` | codex/claude/node 版本、macOS 版本、内存 |
 | `prompt-info.txt` | 卡死时的 prompt 长度 + 前 800 字符 |
 | `full.log.snapshot` | 卡死时 log 完整快照 |
@@ -167,7 +163,7 @@ export AI_WATCHDOG_KILL_CHECKS=10   # 多少次无更新 → kill
 
 | 文件 | 干嘛 |
 |---|---|
-| `shell/ai-cli.zsh` | shell 函数实现(`agent` dispatcher + 4 个核心命令 + 4 个管理命令 + 老命令 alias) |
+| `shell/ai-cli.zsh` | shell 函数实现(`agent` dispatcher + 4 个核心命令 + 4 个管理命令) |
 | `bin/agent` | 单一入口 wrapper,装到 `~/.local/bin/agent`,让非交互 shell(Claude Code Bash tool / cron / systemd)也能直接用 |
 | `skills/codex-cli/SKILL.md` | 教 Claude Code 怎么调 codex CLI(开发型任务、worktree 流程、任务调度) |
 | `skills/claude-cli/SKILL.md` | 教 Claude Code 怎么调 claude CLI(方案/分析/审视型任务) |

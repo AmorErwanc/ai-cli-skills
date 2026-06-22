@@ -85,11 +85,6 @@ _ai_apply_cwd() {
   return 0
 }
 
-_ai_deprecation_warn() {
-  # 老命令调用时打 deprecation 提示到 stderr,不影响 stdout 业务输出
-  local old="$1" new="$2"
-  echo "⚠ '$old' 已弃用,3 个月后移除。请改用: $new" >&2
-}
 
 _ai_require_arg() {
   # 校验带值 flag 后面真有值(防止 -f 后没传文件路径就 shift 出界)
@@ -245,7 +240,7 @@ _ai_capture_incident() {
 
   # === concurrent.txt(总是收集,看 race) ===
   {
-    echo "=== 当时活跃的 ai-codex / ai-claude 命令 ==="
+    echo "=== 当时活跃的 codex / claude 进程 ==="
     pgrep -fl 'codex exec|claude -p' 2>/dev/null || echo "(无)"
   } > "$incident_dir/concurrent.txt"
 
@@ -384,9 +379,8 @@ _ai_watchdog() {
 # 公共命令
 # ============================================================
 
-ai-codex() {
+_agent_codex_new() {
   [[ -z "${functions[_ai_validate_name]}" ]] && source "${_AI_CLI_SELF:-$HOME/.config/zsh/ai-cli.zsh}" 2>/dev/null
-  [[ -z "$_AGENT_FROM_DISPATCH" ]] && _ai_deprecation_warn "ai-codex" "agent codex new"
   local name="$1" desc="$2"
   shift 2 2>/dev/null
   local prompt=""
@@ -496,9 +490,8 @@ $(_ai_safety_suffix)"
   echo "✓ codex session 'codex-$name' 已创建(sid: ${sid:0:8}…)"
 }
 
-ai-codex-c() {
+_agent_codex_c() {
   [[ -z "${functions[_ai_validate_name]}" ]] && source "${_AI_CLI_SELF:-$HOME/.config/zsh/ai-cli.zsh}" 2>/dev/null
-  [[ -z "$_AGENT_FROM_DISPATCH" ]] && _ai_deprecation_warn "ai-codex-c" "agent codex c"
   local name="$1"
   shift 1 2>/dev/null
   local prompt=""
@@ -590,9 +583,8 @@ $(_ai_safety_suffix)"
   echo "✓ codex 'codex-$name' Round $round 完成"
 }
 
-ai-claude() {
+_agent_claude_new() {
   [[ -z "${functions[_ai_validate_name]}" ]] && source "${_AI_CLI_SELF:-$HOME/.config/zsh/ai-cli.zsh}" 2>/dev/null
-  [[ -z "$_AGENT_FROM_DISPATCH" ]] && _ai_deprecation_warn "ai-claude" "agent claude new"
   local name="$1" desc="$2"
   shift 2 2>/dev/null
   local prompt=""
@@ -691,9 +683,8 @@ $(_ai_safety_suffix)"
   echo "✓ claude session 'claude-$name' 已创建(sid: ${sid:0:8}…)"
 }
 
-ai-claude-c() {
+_agent_claude_c() {
   [[ -z "${functions[_ai_validate_name]}" ]] && source "${_AI_CLI_SELF:-$HOME/.config/zsh/ai-cli.zsh}" 2>/dev/null
-  [[ -z "$_AGENT_FROM_DISPATCH" ]] && _ai_deprecation_warn "ai-claude-c" "agent claude c"
   local name="$1"
   shift 1 2>/dev/null
   local prompt=""
@@ -782,9 +773,8 @@ $(_ai_safety_suffix)"
   echo "✓ claude 'claude-$name' Round $round 完成"
 }
 
-ai-sessions() {
+_agent_ls() {
   [[ -z "${functions[_ai_validate_name]}" ]] && source "${_AI_CLI_SELF:-$HOME/.config/zsh/ai-cli.zsh}" 2>/dev/null
-  [[ -z "$_AGENT_FROM_DISPATCH" ]] && _ai_deprecation_warn "ai-sessions" "agent ls"
 
   if (( $# > 1 )); then
     echo "❌ agent ls 只接受 0 或 1 个过滤参数(传了 $#): $*"
@@ -856,11 +846,10 @@ ai-sessions() {
   fi
 }
 
-ai-rm() {
+_agent_rm() {
   [[ -z "${functions[_ai_validate_name]}" ]] && source "${_AI_CLI_SELF:-$HOME/.config/zsh/ai-cli.zsh}" 2>/dev/null
-  [[ -z "$_AGENT_FROM_DISPATCH" ]] && _ai_deprecation_warn "ai-rm" "agent rm"
   if [[ $# -ne 1 ]]; then
-    echo "❌ 一次只能删一个: ai-rm <name>"
+    echo "❌ 一次只能删一个: agent rm <name>"
     echo "   <name> 可以是短名(audit-x)或完整名(codex-audit-x)"
     return 1
   fi
@@ -883,7 +872,7 @@ ai-rm() {
     if (( ${#matches[@]} > 1 )); then
       echo "⚠ '$input' 在多个 CLI 下都存在:"
       for m in "${matches[@]}"; do echo "   $(basename "$m")"; done
-      echo "请显式: ai-rm codex-$input 或 ai-rm claude-$input"
+      echo "请显式: agent rm codex-$input 或 agent rm claude-$input"
       return 1
     fi
     sdir="${matches[1]}"
@@ -899,8 +888,7 @@ ai-rm() {
 }
 
 # 查看 / 管理 incidents
-ai-incidents() {
-  [[ -z "$_AGENT_FROM_DISPATCH" ]] && _ai_deprecation_warn "ai-incidents" "agent incidents"
+_agent_incidents() {
   local root="$HOME/.ai-sessions-incidents"
 
   # 列出全部
@@ -927,7 +915,7 @@ ai-incidents() {
       printf "$fmt" "$ts" "$cli" "${name:0:30}" "$reason"
     done
     echo ""
-    echo "查看详情:  ai-incidents <incident-id 关键字>"
+    echo "查看详情:  agent incidents <incident-id 关键字>"
     echo "全部清理:  rm -rf $root"
     return 0
   fi
@@ -966,8 +954,7 @@ ai-incidents() {
 }
 
 # 一键更新 ai-cli-skills 到最新版
-ai-update() {
-  [[ -z "$_AGENT_FROM_DISPATCH" ]] && _ai_deprecation_warn "ai-update" "agent update"
+_agent_update() {
   echo "📦 拉取最新版 ai-cli-skills..."
   echo ""
   if curl -fsSL https://raw.githubusercontent.com/AmorErwanc/ai-cli-skills/main/install.sh | bash; then
@@ -1030,9 +1017,6 @@ agent — AI session 管理(codex / claude 非交互调用 + 多 session 并行 
   -C, --cwd  工作目录(可选,不传 = 当前 PWD)
   -f         从文件读 prompt(prompt 较长、含反引号/$ 等特殊字符、或以 - 开头时用,跟 <prompt> 互斥)
              文件内容会自动 archive 到 <session>/prompt.md(new)或 prompt-round-N.md(续聊)
-
-老命令 ai-codex / ai-claude / ai-codex-c / ai-claude-c / ai-sessions / ai-rm / ai-incidents / ai-update
-仍可用,3 个月后移除。
 EOF
 }
 
@@ -1108,14 +1092,13 @@ _agent_dispatch() {
   fi
 
   local sub="$1"; shift
-  local _AGENT_FROM_DISPATCH=1   # 让旧函数知道是 dispatch 进来的,不打 deprecation
 
   case "$sub" in
     codex)
       local action="$1"; shift 2>/dev/null
       case "$action" in
-        new)                  ai-codex "$@" ;;
-        c)                    ai-codex-c "$@" ;;
+        new)                  _agent_codex_new "$@" ;;
+        c)                    _agent_codex_c "$@" ;;
         help|-h|--help|"")    _agent_codex_help ;;
         *)
           echo "❌ 未知 codex 子命令: $action" >&2
@@ -1127,8 +1110,8 @@ _agent_dispatch() {
     claude)
       local action="$1"; shift 2>/dev/null
       case "$action" in
-        new)                  ai-claude "$@" ;;
-        c)                    ai-claude-c "$@" ;;
+        new)                  _agent_claude_new "$@" ;;
+        c)                    _agent_claude_c "$@" ;;
         help|-h|--help|"")    _agent_claude_help ;;
         *)
           echo "❌ 未知 claude 子命令: $action" >&2
@@ -1137,10 +1120,10 @@ _agent_dispatch() {
           ;;
       esac
       ;;
-    ls)        ai-sessions "$@" ;;
-    rm)        ai-rm "$@" ;;
-    incidents) ai-incidents "$@" ;;
-    update)    ai-update "$@" ;;
+    ls)        _agent_ls "$@" ;;
+    rm)        _agent_rm "$@" ;;
+    incidents) _agent_incidents "$@" ;;
+    update)    _agent_update "$@" ;;
     *)
       echo "❌ 未知子命令: $sub" >&2
       echo "   跑 'agent help' 看用法" >&2

@@ -6,6 +6,8 @@ echo "🗑  卸载 ai-cli-skills..."
 
 rm -f ~/.config/zsh/ai-cli.zsh
 rm -f ~/.local/bin/agent
+# 老 wrapper(从旧版升级未清的)一起清掉
+rm -f ~/.local/bin/{ai-codex,ai-codex-c,ai-claude,ai-claude-c,ai-sessions,ai-rm,ai-incidents,ai-update,ai-cli-wrapper}
 rm -rf ~/.claude/skills/codex-cli ~/.claude/skills/claude-cli
 
 ZSHRC="${ZDOTDIR:-$HOME}/.zshrc"
