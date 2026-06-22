@@ -47,40 +47,64 @@ codex/claude 没装也能装本工具,只是不能跑——装完任何一个就
 
 | 子命令 | 作用 |
 |---|---|
-| `agent codex  new <name> <desc> <prompt> [flags]` | 新起 codex session |
-| `agent codex  c   <name> <prompt> [flags]` | 续聊 codex session |
-| `agent claude new <name> <desc> <prompt> [flags]` | 新起 claude session |
-| `agent claude c   <name> <prompt> [flags]` | 续聊 claude session |
-| `agent ls` | 列出当前主项目所有 session |
+| `agent codex  new <name> <desc> (<prompt>\|-f file) [flags]` | 新起 codex session |
+| `agent codex  c   <name> (<prompt>\|-f file) [flags]` | 续聊 codex session |
+| `agent claude new <name> <desc> (<prompt>\|-f file) [flags]` | 新起 claude session |
+| `agent claude c   <name> (<prompt>\|-f file) [flags]` | 续聊 claude session |
+| `agent ls [codex\|claude]` | 列 session(可按 cli 过滤,无过滤时按 cli 分组) |
 | `agent rm <name>` | 删除某 session(短名歧义时用完整 `codex-<name>` / `claude-<name>`) |
 | `agent incidents [<id>]` | 列出 / 查看 watchdog 抓的 hang 诊断包(详见下文 Watchdog) |
 | `agent update` | 一键更新到最新版(等同重跑 install.sh) |
-| `agent help` | 用法 |
+| `agent help` / `agent codex help` / `agent claude help` | 顶层用法 / 子命令详细用法 |
 
 ### 参数
 
 - `<name>`:kebab-case,语义化(`audit-payment`、`refactor-auth`)
 - `<desc>`:`new` 必填,**≥ 15 字符**,讲清这个 session 在做什么
-- `<prompt>`:自然语言任务描述,建议覆盖五个维度——目标 / 背景 / 输入 / 约束 / 产出
+- `<prompt>`:位置参数 prompt 字符串,适合短任务。**以 `-` 开头会被当 flag**,这种情况改走 `-f`
+- `-f <file>`:从文件读 prompt,**跟 `<prompt>` 互斥**。以下任一情况推荐 `-f`:
+  - prompt 含反引号 `` ` ``、`$`、`&` 等会被 shell 解析的特殊字符
+  - prompt 以 `-` 开头
+  - prompt 很长(几行以上)
+
+  文件内容会自动 archive 到 `<session>/prompt.md`(new)或 `prompt-round-N.md`(续聊),方便复盘。
 
 可选 flag(默认不传,走 config):
 - `-m <model>` 覆盖模型
 - `-e <level>` 覆盖思考强度(`low/medium/high/xhigh/max`)
 - `-C, --cwd <dir>` 工作目录(等价于先 `cd <dir>` 再起,**不传 = 当前 shell PWD**)
 
-### 一个例子
+### Safety suffix(每条 prompt 自动追加)
+
+shell 函数在每条 prompt 末尾追加两条约束:
+
+> 1. 不要执行 git commit 或 git push。
+> 2. 不要调用 agent 命令起新 session,避免任务套娃。
+
+第 2 条防 codex/claude 在 `danger-full-access` / `bypassPermissions` 模式下主动起新 session 形成嵌套。Claude Code 当外层调度方,被起的 codex/claude 当执行方,不再嵌套。
+
+### 一个例子(短 prompt + 长 prompt 两种)
 
 ```bash
-# 起 codex 起一个开发 session(改文件场景建议先建 worktree,见 SKILL.md)
+# 短任务:位置参数 prompt
 agent codex new add-cache "给 auth 模块加 Redis 缓存避免重复查 DB" \
   "[目标] 给 src/auth/get-user.ts 加 Redis 缓存。[约束] 不要装新依赖。[产出] 改完一句话说改了啥。" \
   -C ~/project/myapp
 
+# 复杂 prompt(多行、含特殊字符):走 -f 文件
+cat > ~/tmp/agent-prompt-foo.md <<'EOF'
+[目标] 评估 redis vs memcached 在缓存层的取舍
+[背景] 我们的系统 $TPS 大约 5000,有 markdown 代码块的反引号 `code` 都安全
+EOF
+agent claude new eval-cache "评估缓存方案选型(redis vs memcached)" \
+  -f ~/tmp/agent-prompt-foo.md -C ~/project/myapp
+
 # 续聊
 agent codex c add-cache "刚才加的缓存没处理 cache miss 时的 thundering herd,加个 SETNX 锁。"
 
-# 看看所有 session
-agent ls
+# 按 cli 看 session
+agent ls            # 分组显示 [codex] 和 [claude]
+agent ls codex      # 只看 codex
 
 # 删
 agent rm add-cache

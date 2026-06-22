@@ -91,8 +91,54 @@ _ai_deprecation_warn() {
   echo "⚠ '$old' 已弃用,3 个月后移除。请改用: $new" >&2
 }
 
+_ai_require_arg() {
+  # 校验带值 flag 后面真有值(防止 -f 后没传文件路径就 shift 出界)
+  # 用法: _ai_require_arg <flag-name> "$2"
+  local flag="$1" value="$2"
+  if [[ -z "$value" || "$value" == -* ]]; then
+    echo "❌ $flag 缺少值"
+    return 1
+  fi
+  return 0
+}
+
+_ai_read_prompt_file() {
+  # 读 -f 指定的 prompt 文件:校验存在、非空,算绝对路径(防 -C cd 后找不到)
+  # 成功时把内容写到全局 _AI_RPF_CONTENT,绝对路径写到 _AI_RPF_ABS
+  local file="$1"
+  _AI_RPF_CONTENT=""
+  _AI_RPF_ABS=""
+  if [[ -z "$file" ]]; then
+    echo "❌ -f 文件路径不能为空"
+    return 1
+  fi
+  if [[ ! -f "$file" ]]; then
+    echo "❌ -f 文件不存在: $file"
+    return 1
+  fi
+  local abs_file
+  abs_file="$(cd "$(dirname "$file")" 2>/dev/null && pwd)/$(basename "$file")"
+  if [[ ! -f "$abs_file" ]]; then
+    echo "❌ -f 解析绝对路径失败: $file"
+    return 1
+  fi
+  local content
+  content="$(<"$abs_file")"
+  if [[ -z "$content" ]]; then
+    echo "❌ -f 文件为空: $file"
+    return 1
+  fi
+  _AI_RPF_CONTENT="$content"
+  _AI_RPF_ABS="$abs_file"
+  return 0
+}
+
 _ai_safety_suffix() {
-  echo "约束:不要执行 git commit 或 git push。"
+  cat <<'EOF'
+约束:
+- 不要执行 git commit 或 git push。
+- 不要调用 agent 命令起新 session,避免任务套娃。你就是被外层 agent 起来的 session,直接完成任务。
+EOF
 }
 
 _ai_round_count() {
@@ -341,34 +387,55 @@ _ai_watchdog() {
 ai-codex() {
   [[ -z "${functions[_ai_validate_name]}" ]] && source "${_AI_CLI_SELF:-$HOME/.config/zsh/ai-cli.zsh}" 2>/dev/null
   [[ -z "$_AGENT_FROM_DISPATCH" ]] && _ai_deprecation_warn "ai-codex" "agent codex new"
-  local name="$1" desc="$2" prompt="$3"
-  shift 3 2>/dev/null
-  local model="" effort="" cwd=""
+  local name="$1" desc="$2"
+  shift 2 2>/dev/null
+  local prompt=""
+  # 第 3 个位置参数:不以 - 开头 → prompt 字符串
+  if [[ $# -gt 0 && "$1" != -* ]]; then
+    prompt="$1"; shift
+  fi
+  local model="" effort="" cwd="" prompt_file=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      -m) model="$2"; shift 2 ;;
-      -e) effort="$2"; shift 2 ;;
-      -C|--cwd) cwd="$2"; shift 2 ;;
+      -m) _ai_require_arg -m "$2" || return 1; model="$2"; shift 2 ;;
+      -e) _ai_require_arg -e "$2" || return 1; effort="$2"; shift 2 ;;
+      -C|--cwd) _ai_require_arg -C "$2" || return 1; cwd="$2"; shift 2 ;;
+      -f) _ai_require_arg -f "$2" || return 1; prompt_file="$2"; shift 2 ;;
       *) echo "❌ 未知参数: $1"; return 1 ;;
     esac
   done
 
+  # 位置参数 prompt 和 -f 二选一
+  if [[ -n "$prompt" && -n "$prompt_file" ]]; then
+    echo "❌ 不能同时传 <prompt> 位置参数和 -f file,只用一种"
+    return 1
+  fi
+  if [[ -n "$prompt_file" ]]; then
+    _ai_read_prompt_file "$prompt_file" || return 1
+    prompt="$_AI_RPF_CONTENT"
+    prompt_file="$_AI_RPF_ABS"
+  fi
+
   _ai_validate_name "$name" || return 1
   _ai_validate_desc "$desc" || return 1
-  [[ -z "$prompt" ]] && { echo "❌ prompt 不能为空"; return 1; }
+  [[ -z "$prompt" ]] && { echo "❌ prompt 不能为空(用 \"<prompt>\" 或 -f <file>)"; return 1; }
   _ai_apply_cwd "$cwd" || return 1
 
   _ai_init
   local sdir="$(_ai_session_root)/.ai-sessions/codex-$name"
   if [[ -d "$sdir" ]]; then
     echo "❌ session 'codex-$name' 已存在"
-    echo "   续聊: ai-codex-c $name \"...\""
-    echo "   重置: ai-rm codex-$name && ai-codex $name \"...\" \"...\""
+    echo "   续聊: agent codex c $name \"...\""
+    echo "   重置: agent rm codex-$name && agent codex new $name \"...\" \"...\""
     return 1
   fi
 
   mkdir -p "$sdir"
   printf '%s\n' "$desc" > "$sdir/desc"
+  # archive prompt 文件(如果走 -f)留底,方便复盘
+  if [[ -n "$prompt_file" ]]; then
+    cp "$prompt_file" "$sdir/prompt.md" || echo "⚠ archive prompt 文件失败,session 仍会继续(详见 stderr)" >&2
+  fi
 
   local skip_flag=$(_ai_skip_git_flag)
   local extra=""
@@ -432,30 +499,52 @@ $(_ai_safety_suffix)"
 ai-codex-c() {
   [[ -z "${functions[_ai_validate_name]}" ]] && source "${_AI_CLI_SELF:-$HOME/.config/zsh/ai-cli.zsh}" 2>/dev/null
   [[ -z "$_AGENT_FROM_DISPATCH" ]] && _ai_deprecation_warn "ai-codex-c" "agent codex c"
-  local name="$1" prompt="$2"
-  shift 2 2>/dev/null
-  local cwd=""
+  local name="$1"
+  shift 1 2>/dev/null
+  local prompt=""
+  # 第 2 个位置参数:不以 - 开头 → prompt 字符串
+  if [[ $# -gt 0 && "$1" != -* ]]; then
+    prompt="$1"; shift
+  fi
+  local cwd="" prompt_file=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      -C|--cwd) cwd="$2"; shift 2 ;;
+      -C|--cwd) _ai_require_arg -C "$2" || return 1; cwd="$2"; shift 2 ;;
+      -f) _ai_require_arg -f "$2" || return 1; prompt_file="$2"; shift 2 ;;
       *) echo "❌ 未知参数: $1"; return 1 ;;
     esac
   done
 
+  # 位置参数 prompt 和 -f 二选一
+  if [[ -n "$prompt" && -n "$prompt_file" ]]; then
+    echo "❌ 不能同时传 <prompt> 位置参数和 -f file,只用一种"
+    return 1
+  fi
+  if [[ -n "$prompt_file" ]]; then
+    _ai_read_prompt_file "$prompt_file" || return 1
+    prompt="$_AI_RPF_CONTENT"
+    prompt_file="$_AI_RPF_ABS"
+  fi
+
   _ai_validate_name "$name" || return 1
-  [[ -z "$prompt" ]] && { echo "❌ prompt 不能为空(用法: <name> \"<prompt>\" [-C dir])"; return 1; }
+  [[ -z "$prompt" ]] && { echo "❌ prompt 不能为空(用法: <name> \"<prompt>\" [-C dir] 或 <name> -f <file>)"; return 1; }
   _ai_apply_cwd "$cwd" || return 1
 
   local sdir="$(_ai_session_root)/.ai-sessions/codex-$name"
   if [[ ! -d "$sdir" ]]; then
     echo "❌ session 'codex-$name' 不存在"
-    echo "   新起: ai-codex $name \"<desc≥15字>\" \"<prompt>\""
+    echo "   新起: agent codex new $name \"<desc≥15字>\" \"<prompt>\""
     return 1
   fi
 
   local sid=$(cat "$sdir/sid")
   local skip_flag=$(_ai_skip_git_flag)
   local round=$(( $(_ai_round_count "$sdir/full.log") + 1 ))
+
+  # archive prompt 文件(如果走 -f)留底,以 round 命名
+  if [[ -n "$prompt_file" ]]; then
+    cp "$prompt_file" "$sdir/prompt-round-$round.md" || echo "⚠ archive prompt 文件失败,session 仍会继续(详见 stderr)" >&2
+  fi
 
   local full_prompt="$prompt
 
@@ -504,29 +593,44 @@ $(_ai_safety_suffix)"
 ai-claude() {
   [[ -z "${functions[_ai_validate_name]}" ]] && source "${_AI_CLI_SELF:-$HOME/.config/zsh/ai-cli.zsh}" 2>/dev/null
   [[ -z "$_AGENT_FROM_DISPATCH" ]] && _ai_deprecation_warn "ai-claude" "agent claude new"
-  local name="$1" desc="$2" prompt="$3"
-  shift 3 2>/dev/null
-  local model="" effort="" cwd=""
+  local name="$1" desc="$2"
+  shift 2 2>/dev/null
+  local prompt=""
+  if [[ $# -gt 0 && "$1" != -* ]]; then
+    prompt="$1"; shift
+  fi
+  local model="" effort="" cwd="" prompt_file=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      -m) model="$2"; shift 2 ;;
-      -e) effort="$2"; shift 2 ;;
-      -C|--cwd) cwd="$2"; shift 2 ;;
+      -m) _ai_require_arg -m "$2" || return 1; model="$2"; shift 2 ;;
+      -e) _ai_require_arg -e "$2" || return 1; effort="$2"; shift 2 ;;
+      -C|--cwd) _ai_require_arg -C "$2" || return 1; cwd="$2"; shift 2 ;;
+      -f) _ai_require_arg -f "$2" || return 1; prompt_file="$2"; shift 2 ;;
       *) echo "❌ 未知参数: $1"; return 1 ;;
     esac
   done
 
+  if [[ -n "$prompt" && -n "$prompt_file" ]]; then
+    echo "❌ 不能同时传 <prompt> 位置参数和 -f file,只用一种"
+    return 1
+  fi
+  if [[ -n "$prompt_file" ]]; then
+    _ai_read_prompt_file "$prompt_file" || return 1
+    prompt="$_AI_RPF_CONTENT"
+    prompt_file="$_AI_RPF_ABS"
+  fi
+
   _ai_validate_name "$name" || return 1
   _ai_validate_desc "$desc" || return 1
-  [[ -z "$prompt" ]] && { echo "❌ prompt 不能为空"; return 1; }
+  [[ -z "$prompt" ]] && { echo "❌ prompt 不能为空(用 \"<prompt>\" 或 -f <file>)"; return 1; }
   _ai_apply_cwd "$cwd" || return 1
 
   _ai_init
   local sdir="$(_ai_session_root)/.ai-sessions/claude-$name"
   if [[ -d "$sdir" ]]; then
     echo "❌ session 'claude-$name' 已存在"
-    echo "   续聊: ai-claude-c $name \"...\""
-    echo "   重置: ai-rm claude-$name && ai-claude $name \"...\" \"...\""
+    echo "   续聊: agent claude c $name \"...\""
+    echo "   重置: agent rm claude-$name && agent claude new $name \"...\" \"...\""
     return 1
   fi
 
@@ -534,6 +638,10 @@ ai-claude() {
   local sid=$(uuidgen | tr A-Z a-z)
   printf '%s\n' "$sid" > "$sdir/sid"
   printf '%s\n' "$desc" > "$sdir/desc"
+  # archive prompt 文件(如果走 -f)留底,方便复盘
+  if [[ -n "$prompt_file" ]]; then
+    cp "$prompt_file" "$sdir/prompt.md" || echo "⚠ archive prompt 文件失败,session 仍会继续(详见 stderr)" >&2
+  fi
 
   local extra=""
   [[ -n "$model" ]] && extra="$extra --model $model"
@@ -586,29 +694,49 @@ $(_ai_safety_suffix)"
 ai-claude-c() {
   [[ -z "${functions[_ai_validate_name]}" ]] && source "${_AI_CLI_SELF:-$HOME/.config/zsh/ai-cli.zsh}" 2>/dev/null
   [[ -z "$_AGENT_FROM_DISPATCH" ]] && _ai_deprecation_warn "ai-claude-c" "agent claude c"
-  local name="$1" prompt="$2"
-  shift 2 2>/dev/null
-  local cwd=""
+  local name="$1"
+  shift 1 2>/dev/null
+  local prompt=""
+  if [[ $# -gt 0 && "$1" != -* ]]; then
+    prompt="$1"; shift
+  fi
+  local cwd="" prompt_file=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      -C|--cwd) cwd="$2"; shift 2 ;;
+      -C|--cwd) _ai_require_arg -C "$2" || return 1; cwd="$2"; shift 2 ;;
+      -f) _ai_require_arg -f "$2" || return 1; prompt_file="$2"; shift 2 ;;
       *) echo "❌ 未知参数: $1"; return 1 ;;
     esac
   done
 
+  if [[ -n "$prompt" && -n "$prompt_file" ]]; then
+    echo "❌ 不能同时传 <prompt> 位置参数和 -f file,只用一种"
+    return 1
+  fi
+  if [[ -n "$prompt_file" ]]; then
+    _ai_read_prompt_file "$prompt_file" || return 1
+    prompt="$_AI_RPF_CONTENT"
+    prompt_file="$_AI_RPF_ABS"
+  fi
+
   _ai_validate_name "$name" || return 1
-  [[ -z "$prompt" ]] && { echo "❌ prompt 不能为空(用法: <name> \"<prompt>\" [-C dir])"; return 1; }
+  [[ -z "$prompt" ]] && { echo "❌ prompt 不能为空(用法: <name> \"<prompt>\" [-C dir] 或 <name> -f <file>)"; return 1; }
   _ai_apply_cwd "$cwd" || return 1
 
   local sdir="$(_ai_session_root)/.ai-sessions/claude-$name"
   if [[ ! -d "$sdir" ]]; then
     echo "❌ session 'claude-$name' 不存在"
-    echo "   新起: ai-claude $name \"<desc≥15字>\" \"<prompt>\""
+    echo "   新起: agent claude new $name \"<desc≥15字>\" \"<prompt>\""
     return 1
   fi
 
   local sid=$(cat "$sdir/sid")
   local round=$(( $(_ai_round_count "$sdir/full.log") + 1 ))
+
+  # archive prompt 文件(如果走 -f)留底,以 round 命名
+  if [[ -n "$prompt_file" ]]; then
+    cp "$prompt_file" "$sdir/prompt-round-$round.md" || echo "⚠ archive prompt 文件失败,session 仍会继续(详见 stderr)" >&2
+  fi
 
   local full_prompt="$prompt
 
@@ -657,43 +785,74 @@ $(_ai_safety_suffix)"
 ai-sessions() {
   [[ -z "${functions[_ai_validate_name]}" ]] && source "${_AI_CLI_SELF:-$HOME/.config/zsh/ai-cli.zsh}" 2>/dev/null
   [[ -z "$_AGENT_FROM_DISPATCH" ]] && _ai_deprecation_warn "ai-sessions" "agent ls"
+
+  if (( $# > 1 )); then
+    echo "❌ agent ls 只接受 0 或 1 个过滤参数(传了 $#): $*"
+    return 1
+  fi
+  local filter="$1"
+  if [[ -n "$filter" && "$filter" != "codex" && "$filter" != "claude" ]]; then
+    echo "❌ 过滤参数必须是 codex 或 claude(当前: '$filter')"
+    return 1
+  fi
+
   local root="$(_ai_session_root)/.ai-sessions"
   if [[ ! -d "$root" ]]; then
-    echo "当前目录无 .ai-sessions/(尚未使用过 ai-cli)"
+    echo "当前目录无 .ai-sessions/(尚未使用过 agent)"
     return 0
   fi
 
-  local found=0
-  local fmt="%-7s  %-22s  %-50s  %s\n"
-  printf "$fmt" "CLI" "NAME" "DESC" "UPDATED"
-  printf -- "%.0s-" {1..96}; echo
+  local fmt="%-22s  %-50s  %s\n"
+  local total=0
 
-  for sdir in "$root"/*/; do
-    [[ -d "$sdir" ]] || continue
-    local base=$(basename "$sdir")
-    [[ "$base" == .* ]] && continue
-    local cli="${base%%-*}"
-    local name="${base#*-}"
-    local desc=""
-    if [[ -f "$sdir/desc" ]]; then
-      desc=$(head -1 "$sdir/desc")
-      local len=$(printf '%s' "$desc" | LC_ALL=en_US.UTF-8 wc -m | tr -d ' ')
-      if (( len > 50 )); then
-        desc=$(printf '%s' "$desc" | cut -c1-50)"…"
+  for target_cli in codex claude; do
+    [[ -n "$filter" && "$filter" != "$target_cli" ]] && continue
+
+    # 收集当前 cli 的 sessions
+    local sessions=()
+    for sdir in "$root"/*(N/); do
+      local base=$(basename "$sdir")
+      [[ "$base" == .* ]] && continue
+      local cli="${base%%-*}"
+      [[ "$cli" == "$target_cli" ]] && sessions+=("$sdir")
+    done
+
+    (( ${#sessions[@]} == 0 )) && continue
+
+    # 不是第一组时加空行分隔
+    (( total > 0 )) && echo ""
+    echo "[$target_cli] ${#sessions[@]} session(s)"
+    printf "$fmt" "NAME" "DESC" "UPDATED"
+    printf -- "%.0s-" {1..86}; echo
+
+    for sdir in "${sessions[@]}"; do
+      local base=$(basename "$sdir")
+      local name="${base#*-}"
+      local desc=""
+      if [[ -f "$sdir/desc" ]]; then
+        desc=$(head -1 "$sdir/desc")
+        local len=$(printf '%s' "$desc" | LC_ALL=en_US.UTF-8 wc -m | tr -d ' ')
+        if (( len > 50 )); then
+          desc=$(printf '%s' "$desc" | cut -c1-50)"…"
+        fi
       fi
-    fi
-    local updated="?"
-    local probe="$sdir/full.log"
-    [[ -f "$probe" ]] || probe="$sdir/sid"
-    if [[ -f "$probe" ]]; then
-      updated=$(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$probe" 2>/dev/null || echo "?")
-    fi
-    printf "$fmt" "$cli" "$name" "$desc" "$updated"
-    found=$((found + 1))
+      local updated="?"
+      local probe="$sdir/full.log"
+      [[ -f "$probe" ]] || probe="$sdir/sid"
+      if [[ -f "$probe" ]]; then
+        updated=$(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$probe" 2>/dev/null || echo "?")
+      fi
+      printf "$fmt" "$name" "$desc" "$updated"
+      total=$((total + 1))
+    done
   done
 
-  if (( found == 0 )); then
-    echo "(空)"
+  if (( total == 0 )); then
+    if [[ -n "$filter" ]]; then
+      echo "(无 $filter session)"
+    else
+      echo "(空)"
+    fi
   fi
 }
 
@@ -843,30 +1002,99 @@ agent — AI session 管理(codex / claude 非交互调用 + 多 session 并行 
 
 用法:
   起 session(新):
-    agent codex  new <name> <desc> <prompt> [-m model] [-e effort] [-C dir]
-    agent claude new <name> <desc> <prompt> [-m model] [-e effort] [-C dir]
+    agent codex  new <name> <desc> (<prompt> | -f file) [-m M] [-e E] [-C dir]
+    agent claude new <name> <desc> (<prompt> | -f file) [-m M] [-e E] [-C dir]
 
   续聊:
-    agent codex  c <name> <prompt> [-C dir]
-    agent claude c <name> <prompt> [-C dir]
+    agent codex  c <name> (<prompt> | -f file) [-C dir]
+    agent claude c <name> (<prompt> | -f file) [-C dir]
 
   管理:
-    agent ls                       列出当前主项目所有 session
+    agent ls [codex|claude]        列 session(可按 cli 过滤)
     agent rm <name>                删 session(name 可短可全)
     agent incidents [<id>]         查 watchdog 抓的卡死诊断
     agent update                   一键更新到最新版
+
+  帮助:
     agent help                     本帮助
+    agent codex help               codex 子命令详细用法(含 -f 文件用法示例)
+    agent claude help              claude 子命令详细用法
 
 参数:
   <name>     kebab-case 短名(小写字母/数字/连字符)
-  <desc>     session 描述,≥ 15 字符(仅 new 必填)
-  <prompt>   给 CLI 的 prompt(末尾自动追加 safety 后缀:不要 git commit/push)
+  <desc>     session 描述,≥ 15 字符(仅 new 必填),例: "审查 redis 缓存方案的取舍"
+  <prompt>   位置参数 prompt 字符串(短任务用这个,但**不能以 - 开头**——以 - 开头会被当成 flag,
+             此时必须走 -f file)
   -m         模型覆盖(不传走 ~/.codex/config.toml 或 ~/.claude/settings.json)
   -e         思考强度(low/medium/high/xhigh/max)
-  -C, --cwd  工作目录(可选,不传 = 当前 shell 的 PWD)
+  -C, --cwd  工作目录(可选,不传 = 当前 PWD)
+  -f         从文件读 prompt(prompt 较长、含反引号/$ 等特殊字符、或以 - 开头时用,跟 <prompt> 互斥)
+             文件内容会自动 archive 到 <session>/prompt.md(new)或 prompt-round-N.md(续聊)
 
 老命令 ai-codex / ai-claude / ai-codex-c / ai-claude-c / ai-sessions / ai-rm / ai-incidents / ai-update
 仍可用,3 个月后移除。
+EOF
+}
+
+_agent_codex_help() {
+  cat <<'EOF'
+agent codex — 起 codex session(开发/实现型任务)
+
+用法:
+  agent codex new <name> <desc> (<prompt> | -f file) [-m M] [-e E] [-C dir]
+  agent codex c   <name> (<prompt> | -f file) [-C dir]
+  agent codex help
+
+参数:
+  <name>     kebab-case 短名
+  <desc>     session 描述,≥ 15 字(仅 new 必填),例: "审查 redis 缓存方案的取舍"
+  <prompt>   位置参数 prompt 字符串,**不能以 - 开头**(否则会被当成 flag,此时改走 -f)
+  -m         模型覆盖(默认走 ~/.codex/config.toml)
+  -e         思考强度(low/medium/high/xhigh/max)
+  -C, --cwd  工作目录(等价于先 cd 再起,不传 = 当前 PWD)
+  -f         从文件读 prompt;以下任一情况推荐用 -f(跟 <prompt> 互斥):
+             - prompt 含反引号、$、& 等会被 shell 解析的特殊字符
+             - prompt 以 - 开头(否则被误认为 flag)
+             - prompt 很长(几行以上)
+
+复杂 prompt 推荐写法(heredoc 必须 'EOF' 带单引号,禁止 shell 展开):
+  cat > ~/tmp/agent-prompt-foo.md <<'EOF_INNER'
+  [目标] 复杂的 prompt 里随便用 ` $ {} 都安全
+  EOF_INNER
+  agent codex new foo "审查 redis 缓存方案的取舍" -f ~/tmp/agent-prompt-foo.md -C ~/project/myrepo
+
+-f 文件会自动 archive 到 <session>/prompt.md(new)或 prompt-round-N.md(续聊),方便复盘
+EOF
+}
+
+_agent_claude_help() {
+  cat <<'EOF'
+agent claude — 起 claude session(方案/分析/审视型任务)
+
+用法:
+  agent claude new <name> <desc> (<prompt> | -f file) [-m M] [-e E] [-C dir]
+  agent claude c   <name> (<prompt> | -f file) [-C dir]
+  agent claude help
+
+参数:
+  <name>     kebab-case 短名
+  <desc>     session 描述,≥ 15 字(仅 new 必填),例: "审查 redis 缓存方案的取舍"
+  <prompt>   位置参数 prompt 字符串,**不能以 - 开头**(否则会被当成 flag,此时改走 -f)
+  -m         模型覆盖(默认走 ~/.claude/settings.json)
+  -e         思考强度(low/medium/high/xhigh/max)
+  -C, --cwd  工作目录(等价于先 cd 再起,不传 = 当前 PWD)
+  -f         从文件读 prompt;以下任一情况推荐用 -f(跟 <prompt> 互斥):
+             - prompt 含反引号、$、& 等会被 shell 解析的特殊字符
+             - prompt 以 - 开头(否则被误认为 flag)
+             - prompt 很长(几行以上)
+
+复杂 prompt 推荐写法(heredoc 必须 'EOF' 带单引号,禁止 shell 展开):
+  cat > ~/tmp/agent-prompt-foo.md <<'EOF_INNER'
+  [目标] 复杂的 prompt 里随便用 ` $ {} 都安全
+  EOF_INNER
+  agent claude new foo "审查 redis 缓存方案的取舍" -f ~/tmp/agent-prompt-foo.md -C ~/project/myrepo
+
+-f 文件会自动 archive 到 <session>/prompt.md(new)或 prompt-round-N.md(续聊),方便复盘
 EOF
 }
 
@@ -886,12 +1114,12 @@ _agent_dispatch() {
     codex)
       local action="$1"; shift 2>/dev/null
       case "$action" in
-        new) ai-codex "$@" ;;
-        c)   ai-codex-c "$@" ;;
-        ""|*)
-          echo "❌ 用法: agent codex new|c ..." >&2
-          echo "   agent codex new <name> <desc> <prompt> [-m M] [-e E] [-C dir]" >&2
-          echo "   agent codex c   <name> <prompt> [-C dir]" >&2
+        new)                  ai-codex "$@" ;;
+        c)                    ai-codex-c "$@" ;;
+        help|-h|--help|"")    _agent_codex_help ;;
+        *)
+          echo "❌ 未知 codex 子命令: $action" >&2
+          _agent_codex_help >&2
           return 1
           ;;
       esac
@@ -899,12 +1127,12 @@ _agent_dispatch() {
     claude)
       local action="$1"; shift 2>/dev/null
       case "$action" in
-        new) ai-claude "$@" ;;
-        c)   ai-claude-c "$@" ;;
-        ""|*)
-          echo "❌ 用法: agent claude new|c ..." >&2
-          echo "   agent claude new <name> <desc> <prompt> [-m M] [-e E] [-C dir]" >&2
-          echo "   agent claude c   <name> <prompt> [-C dir]" >&2
+        new)                  ai-claude "$@" ;;
+        c)                    ai-claude-c "$@" ;;
+        help|-h|--help|"")    _agent_claude_help ;;
+        *)
+          echo "❌ 未知 claude 子命令: $action" >&2
+          _agent_claude_help >&2
           return 1
           ;;
       esac
