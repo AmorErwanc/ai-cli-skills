@@ -73,6 +73,24 @@ _ai_skip_git_flag() {
   fi
 }
 
+_ai_apply_cwd() {
+  # -C/--cwd 公共处理:dir 非空就 cd,失败报错;dir 为空直接通过
+  local dir="$1"
+  [[ -z "$dir" ]] && return 0
+  if [[ ! -d "$dir" ]]; then
+    echo "❌ -C 目录不存在: $dir"
+    return 1
+  fi
+  cd "$dir" || { echo "❌ -C cd 失败: $dir"; return 1; }
+  return 0
+}
+
+_ai_deprecation_warn() {
+  # 老命令调用时打 deprecation 提示到 stderr,不影响 stdout 业务输出
+  local old="$1" new="$2"
+  echo "⚠ '$old' 已弃用,3 个月后移除。请改用: $new" >&2
+}
+
 _ai_safety_suffix() {
   echo "约束:不要执行 git commit 或 git push。"
 }
@@ -322,13 +340,15 @@ _ai_watchdog() {
 
 ai-codex() {
   [[ -z "${functions[_ai_validate_name]}" ]] && source "${_AI_CLI_SELF:-$HOME/.config/zsh/ai-cli.zsh}" 2>/dev/null
+  [[ -z "$_AGENT_FROM_DISPATCH" ]] && _ai_deprecation_warn "ai-codex" "agent codex new"
   local name="$1" desc="$2" prompt="$3"
   shift 3 2>/dev/null
-  local model="" effort=""
+  local model="" effort="" cwd=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -m) model="$2"; shift 2 ;;
       -e) effort="$2"; shift 2 ;;
+      -C|--cwd) cwd="$2"; shift 2 ;;
       *) echo "❌ 未知参数: $1"; return 1 ;;
     esac
   done
@@ -336,6 +356,7 @@ ai-codex() {
   _ai_validate_name "$name" || return 1
   _ai_validate_desc "$desc" || return 1
   [[ -z "$prompt" ]] && { echo "❌ prompt 不能为空"; return 1; }
+  _ai_apply_cwd "$cwd" || return 1
 
   _ai_init
   local sdir="$(_ai_session_root)/.ai-sessions/codex-$name"
@@ -410,14 +431,20 @@ $(_ai_safety_suffix)"
 
 ai-codex-c() {
   [[ -z "${functions[_ai_validate_name]}" ]] && source "${_AI_CLI_SELF:-$HOME/.config/zsh/ai-cli.zsh}" 2>/dev/null
-  if [[ $# -ne 2 ]]; then
-    echo "❌ 用法: ai-codex-c <name> \"<prompt>\""
-    return 1
-  fi
+  [[ -z "$_AGENT_FROM_DISPATCH" ]] && _ai_deprecation_warn "ai-codex-c" "agent codex c"
   local name="$1" prompt="$2"
+  shift 2 2>/dev/null
+  local cwd=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -C|--cwd) cwd="$2"; shift 2 ;;
+      *) echo "❌ 未知参数: $1"; return 1 ;;
+    esac
+  done
 
   _ai_validate_name "$name" || return 1
-  [[ -z "$prompt" ]] && { echo "❌ prompt 不能为空"; return 1; }
+  [[ -z "$prompt" ]] && { echo "❌ prompt 不能为空(用法: <name> \"<prompt>\" [-C dir])"; return 1; }
+  _ai_apply_cwd "$cwd" || return 1
 
   local sdir="$(_ai_session_root)/.ai-sessions/codex-$name"
   if [[ ! -d "$sdir" ]]; then
@@ -476,13 +503,15 @@ $(_ai_safety_suffix)"
 
 ai-claude() {
   [[ -z "${functions[_ai_validate_name]}" ]] && source "${_AI_CLI_SELF:-$HOME/.config/zsh/ai-cli.zsh}" 2>/dev/null
+  [[ -z "$_AGENT_FROM_DISPATCH" ]] && _ai_deprecation_warn "ai-claude" "agent claude new"
   local name="$1" desc="$2" prompt="$3"
   shift 3 2>/dev/null
-  local model="" effort=""
+  local model="" effort="" cwd=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -m) model="$2"; shift 2 ;;
       -e) effort="$2"; shift 2 ;;
+      -C|--cwd) cwd="$2"; shift 2 ;;
       *) echo "❌ 未知参数: $1"; return 1 ;;
     esac
   done
@@ -490,6 +519,7 @@ ai-claude() {
   _ai_validate_name "$name" || return 1
   _ai_validate_desc "$desc" || return 1
   [[ -z "$prompt" ]] && { echo "❌ prompt 不能为空"; return 1; }
+  _ai_apply_cwd "$cwd" || return 1
 
   _ai_init
   local sdir="$(_ai_session_root)/.ai-sessions/claude-$name"
@@ -555,14 +585,20 @@ $(_ai_safety_suffix)"
 
 ai-claude-c() {
   [[ -z "${functions[_ai_validate_name]}" ]] && source "${_AI_CLI_SELF:-$HOME/.config/zsh/ai-cli.zsh}" 2>/dev/null
-  if [[ $# -ne 2 ]]; then
-    echo "❌ 用法: ai-claude-c <name> \"<prompt>\""
-    return 1
-  fi
+  [[ -z "$_AGENT_FROM_DISPATCH" ]] && _ai_deprecation_warn "ai-claude-c" "agent claude c"
   local name="$1" prompt="$2"
+  shift 2 2>/dev/null
+  local cwd=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -C|--cwd) cwd="$2"; shift 2 ;;
+      *) echo "❌ 未知参数: $1"; return 1 ;;
+    esac
+  done
 
   _ai_validate_name "$name" || return 1
-  [[ -z "$prompt" ]] && { echo "❌ prompt 不能为空"; return 1; }
+  [[ -z "$prompt" ]] && { echo "❌ prompt 不能为空(用法: <name> \"<prompt>\" [-C dir])"; return 1; }
+  _ai_apply_cwd "$cwd" || return 1
 
   local sdir="$(_ai_session_root)/.ai-sessions/claude-$name"
   if [[ ! -d "$sdir" ]]; then
@@ -620,6 +656,7 @@ $(_ai_safety_suffix)"
 
 ai-sessions() {
   [[ -z "${functions[_ai_validate_name]}" ]] && source "${_AI_CLI_SELF:-$HOME/.config/zsh/ai-cli.zsh}" 2>/dev/null
+  [[ -z "$_AGENT_FROM_DISPATCH" ]] && _ai_deprecation_warn "ai-sessions" "agent ls"
   local root="$(_ai_session_root)/.ai-sessions"
   if [[ ! -d "$root" ]]; then
     echo "当前目录无 .ai-sessions/(尚未使用过 ai-cli)"
@@ -662,6 +699,7 @@ ai-sessions() {
 
 ai-rm() {
   [[ -z "${functions[_ai_validate_name]}" ]] && source "${_AI_CLI_SELF:-$HOME/.config/zsh/ai-cli.zsh}" 2>/dev/null
+  [[ -z "$_AGENT_FROM_DISPATCH" ]] && _ai_deprecation_warn "ai-rm" "agent rm"
   if [[ $# -ne 1 ]]; then
     echo "❌ 一次只能删一个: ai-rm <name>"
     echo "   <name> 可以是短名(audit-x)或完整名(codex-audit-x)"
@@ -703,6 +741,7 @@ ai-rm() {
 
 # 查看 / 管理 incidents
 ai-incidents() {
+  [[ -z "$_AGENT_FROM_DISPATCH" ]] && _ai_deprecation_warn "ai-incidents" "agent incidents"
   local root="$HOME/.ai-sessions-incidents"
 
   # 列出全部
@@ -769,6 +808,7 @@ ai-incidents() {
 
 # 一键更新 ai-cli-skills 到最新版
 ai-update() {
+  [[ -z "$_AGENT_FROM_DISPATCH" ]] && _ai_deprecation_warn "ai-update" "agent update"
   echo "📦 拉取最新版 ai-cli-skills..."
   echo ""
   if curl -fsSL https://raw.githubusercontent.com/AmorErwanc/ai-cli-skills/main/install.sh | bash; then
@@ -781,3 +821,105 @@ ai-update() {
     return 1
   fi
 }
+
+# ============================================================
+# agent 统一入口 dispatcher
+# ============================================================
+#
+# 用法:
+#   agent codex  new <name> <desc> <prompt> [-m model] [-e effort] [-C dir]
+#   agent codex  c   <name> <prompt> [-C dir]
+#   agent claude new <name> <desc> <prompt> [-m model] [-e effort] [-C dir]
+#   agent claude c   <name> <prompt> [-C dir]
+#   agent ls                       # 列 session
+#   agent rm <name>                # 删 session
+#   agent incidents [<id>]         # 看 watchdog 抓的卡死诊断
+#   agent update                   # 一键更新到最新版
+#   agent help | -h | --help       # 用法
+
+_agent_usage() {
+  cat <<'EOF'
+agent — AI session 管理(codex / claude 非交互调用 + 多 session 并行 + watchdog 防卡死)
+
+用法:
+  起 session(新):
+    agent codex  new <name> <desc> <prompt> [-m model] [-e effort] [-C dir]
+    agent claude new <name> <desc> <prompt> [-m model] [-e effort] [-C dir]
+
+  续聊:
+    agent codex  c <name> <prompt> [-C dir]
+    agent claude c <name> <prompt> [-C dir]
+
+  管理:
+    agent ls                       列出当前主项目所有 session
+    agent rm <name>                删 session(name 可短可全)
+    agent incidents [<id>]         查 watchdog 抓的卡死诊断
+    agent update                   一键更新到最新版
+    agent help                     本帮助
+
+参数:
+  <name>     kebab-case 短名(小写字母/数字/连字符)
+  <desc>     session 描述,≥ 15 字符(仅 new 必填)
+  <prompt>   给 CLI 的 prompt(末尾自动追加 safety 后缀:不要 git commit/push)
+  -m         模型覆盖(不传走 ~/.codex/config.toml 或 ~/.claude/settings.json)
+  -e         思考强度(low/medium/high/xhigh/max)
+  -C, --cwd  工作目录(可选,不传 = 当前 shell 的 PWD)
+
+老命令 ai-codex / ai-claude / ai-codex-c / ai-claude-c / ai-sessions / ai-rm / ai-incidents / ai-update
+仍可用,3 个月后移除。
+EOF
+}
+
+_agent_dispatch() {
+  [[ -z "${functions[_ai_validate_name]}" ]] && source "${_AI_CLI_SELF:-$HOME/.config/zsh/ai-cli.zsh}" 2>/dev/null
+
+  # 没参数 / help
+  if [[ $# -eq 0 || "$1" == "help" || "$1" == "-h" || "$1" == "--help" ]]; then
+    _agent_usage
+    return 0
+  fi
+
+  local sub="$1"; shift
+  local _AGENT_FROM_DISPATCH=1   # 让旧函数知道是 dispatch 进来的,不打 deprecation
+
+  case "$sub" in
+    codex)
+      local action="$1"; shift 2>/dev/null
+      case "$action" in
+        new) ai-codex "$@" ;;
+        c)   ai-codex-c "$@" ;;
+        ""|*)
+          echo "❌ 用法: agent codex new|c ..." >&2
+          echo "   agent codex new <name> <desc> <prompt> [-m M] [-e E] [-C dir]" >&2
+          echo "   agent codex c   <name> <prompt> [-C dir]" >&2
+          return 1
+          ;;
+      esac
+      ;;
+    claude)
+      local action="$1"; shift 2>/dev/null
+      case "$action" in
+        new) ai-claude "$@" ;;
+        c)   ai-claude-c "$@" ;;
+        ""|*)
+          echo "❌ 用法: agent claude new|c ..." >&2
+          echo "   agent claude new <name> <desc> <prompt> [-m M] [-e E] [-C dir]" >&2
+          echo "   agent claude c   <name> <prompt> [-C dir]" >&2
+          return 1
+          ;;
+      esac
+      ;;
+    ls)        ai-sessions "$@" ;;
+    rm)        ai-rm "$@" ;;
+    incidents) ai-incidents "$@" ;;
+    update)    ai-update "$@" ;;
+    *)
+      echo "❌ 未知子命令: $sub" >&2
+      echo "   跑 'agent help' 看用法" >&2
+      return 1
+      ;;
+  esac
+}
+
+# 把 agent 暴露成顶层命令(交互终端 source 时也能直接打 agent)
+agent() { _agent_dispatch "$@"; }

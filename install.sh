@@ -19,10 +19,14 @@ command -v codex >/dev/null 2>&1 || echo "⚠  codex CLI 未装:https://github.c
 command -v claude >/dev/null 2>&1 || echo "⚠  claude CLI 未装:https://docs.claude.com/en/docs/claude-code"
 
 # === 建目录 + 拉文件 ===
-mkdir -p ~/.config/zsh ~/.claude/skills/codex-cli ~/.claude/skills/claude-cli
+mkdir -p ~/.config/zsh ~/.local/bin ~/.claude/skills/codex-cli ~/.claude/skills/claude-cli
 
 echo "下载 shell 函数..."
 curl -fsSL "$RAW/shell/ai-cli.zsh" -o ~/.config/zsh/ai-cli.zsh
+
+echo "下载 agent wrapper..."
+curl -fsSL "$RAW/bin/agent" -o ~/.local/bin/agent
+chmod +x ~/.local/bin/agent
 
 echo "下载 skill 文档..."
 curl -fsSL "$RAW/skills/codex-cli/SKILL.md"  -o ~/.claude/skills/codex-cli/SKILL.md
@@ -43,13 +47,31 @@ else
   echo "⚠  $ZSHRC 不存在,请手动加: source ~/.config/zsh/ai-cli.zsh"
 fi
 
+# === PATH 检测:确保 ~/.local/bin 在 PATH 里(给非交互 shell 用) ===
+# 用 $HOME 而不是 ~ 在 grep 时更稳
+if [ -f "$ZSHRC" ] && ! grep -qE '\.local/bin' "$ZSHRC"; then
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) PATH_OK=1 ;;
+    *) PATH_OK=0 ;;
+  esac
+  if [ "$PATH_OK" = "0" ]; then
+    {
+      echo ""
+      echo "# === ai-cli-skills: 让 agent wrapper 可被非交互 shell 找到 ==="
+      echo 'export PATH="$HOME/.local/bin:$PATH"'
+    } >> "$ZSHRC"
+    echo "✓ 已在 $ZSHRC 加 PATH 导出行(~/.local/bin)"
+  fi
+fi
+
 echo ""
 echo "🎉 安装完成"
 echo ""
 echo "下一步:"
-echo "  1) 重启终端 或 source ~/.zshrc"
-echo "  2) 跑 ai-sessions 验证(应显示 '当前目录无 .ai-sessions/...')"
+echo "  1) 重启终端 或 source ~/.zshrc(让 PATH 和 source 行生效)"
+echo "  2) 跑 'agent ls' 验证(应显示 '当前目录无 .ai-sessions/...')"
 echo "  3) 起测试 session:"
-echo "     ai-codex test-it \"测试 ai-codex 命令是否可用且能正常返回\" \"回 OK 即可,不要做任何事\""
+echo "     agent codex new test-it \"测试 agent 命令是否可用且能正常返回\" \"回 OK 即可,不要做任何事\""
 echo ""
-echo "以后想更新到最新版:跑 ai-update(等同重跑这个 install.sh)"
+echo "命令速查: agent help"
+echo "以后想更新:跑 'agent update'(等同重跑这个 install.sh)"

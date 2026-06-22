@@ -5,14 +5,19 @@ set -e
 echo "🗑  卸载 ai-cli-skills..."
 
 rm -f ~/.config/zsh/ai-cli.zsh
+rm -f ~/.local/bin/agent
 rm -rf ~/.claude/skills/codex-cli ~/.claude/skills/claude-cli
 
 ZSHRC="${ZDOTDIR:-$HOME}/.zshrc"
 if [ -f "$ZSHRC" ]; then
-  # 移除 source 行和它的注释行(只删跟本工具相关的,不动别的)
+  # 只删 ai-cli-skills 相关注释 + source 行(PATH 行太通用,可能跟用户自己加的撞,留着)
   sed -i.bak -e '/# === ai-cli-skills/d' -e '/source.*ai-cli\.zsh/d' "$ZSHRC"
   rm -f "$ZSHRC.bak"
   echo "✓ 已从 $ZSHRC 移除 source 行"
+  if grep -qE '\.local/bin' "$ZSHRC"; then
+    echo "  ⚠ $ZSHRC 里还有 PATH 包含 ~/.local/bin 的行(可能是本工具加的,也可能你自己有别的命令在那),"
+    echo "    若不再需要请手动检查并删除"
+  fi
 fi
 
 echo ""

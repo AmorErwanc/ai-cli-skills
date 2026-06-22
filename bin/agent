@@ -1,0 +1,21 @@
+#!/bin/zsh
+# agent — ai-cli-skills 统一入口
+# 非交互 shell(Claude Code Bash tool / cron / systemd 等)也能用,
+# 不依赖用户 zshrc 是否 source 了 ai-cli.zsh
+set -e
+
+script="$HOME/.config/zsh/ai-cli.zsh"
+
+if [[ ! -f "$script" ]]; then
+  echo "agent error: 缺少 $script(请重跑 install.sh 或 agent update)" >&2
+  exit 127
+fi
+
+source "$script"
+
+if [[ -z "${functions[_agent_dispatch]}" ]]; then
+  echo "agent error: $script 里没找到 _agent_dispatch 函数(版本过旧?)" >&2
+  exit 127
+fi
+
+_agent_dispatch "$@"

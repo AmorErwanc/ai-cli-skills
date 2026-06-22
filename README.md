@@ -18,11 +18,11 @@ less install.sh
 bash install.sh
 ```
 
-装完**重启终端**,跑 `ai-sessions` 验证。
+装完**重启终端**,跑 `agent ls` 验证。
 
 **已装用户更新到最新版**(等同重跑 install.sh,但命令短):
 ```bash
-ai-update
+agent update
 ```
 
 **卸载**:
@@ -41,48 +41,54 @@ codex/claude 没装也能装本工具,只是不能跑——装完任何一个就
 
 ## 用法速览
 
-### 8 个命令
+统一入口 `agent`,一个命令收拢所有操作:
 
-| 命令 | 作用 |
+### 子命令
+
+| 子命令 | 作用 |
 |---|---|
-| `ai-codex   <name> "<desc>" "<prompt>"` | 新起 codex session |
-| `ai-codex-c <name> "<prompt>"` | 续聊 codex session |
-| `ai-claude   <name> "<desc>" "<prompt>"` | 新起 claude session |
-| `ai-claude-c <name> "<prompt>"` | 续聊 claude session |
-| `ai-sessions` | 列出当前主项目所有 session |
-| `ai-rm <name>` | 删除某 session(短名歧义时用完整 `codex-<name>` / `claude-<name>`) |
-| `ai-incidents [<id>]` | 列出 / 查看 watchdog 抓的 hang 诊断包(详见下文 Watchdog) |
-| `ai-update` | 一键更新到最新版(等同重跑 install.sh) |
+| `agent codex  new <name> <desc> <prompt> [flags]` | 新起 codex session |
+| `agent codex  c   <name> <prompt> [flags]` | 续聊 codex session |
+| `agent claude new <name> <desc> <prompt> [flags]` | 新起 claude session |
+| `agent claude c   <name> <prompt> [flags]` | 续聊 claude session |
+| `agent ls` | 列出当前主项目所有 session |
+| `agent rm <name>` | 删除某 session(短名歧义时用完整 `codex-<name>` / `claude-<name>`) |
+| `agent incidents [<id>]` | 列出 / 查看 watchdog 抓的 hang 诊断包(详见下文 Watchdog) |
+| `agent update` | 一键更新到最新版(等同重跑 install.sh) |
+| `agent help` | 用法 |
 
 ### 参数
 
 - `<name>`:kebab-case,语义化(`audit-payment`、`refactor-auth`)
-- `<desc>`:必填,**≥ 15 字符**,讲清这个 session 在做什么
+- `<desc>`:`new` 必填,**≥ 15 字符**,讲清这个 session 在做什么
 - `<prompt>`:自然语言任务描述,建议覆盖五个维度——目标 / 背景 / 输入 / 约束 / 产出
 
 可选 flag(默认不传,走 config):
 - `-m <model>` 覆盖模型
 - `-e <level>` 覆盖思考强度(`low/medium/high/xhigh/max`)
+- `-C, --cwd <dir>` 工作目录(等价于先 `cd <dir>` 再起,**不传 = 当前 shell PWD**)
 
 ### 一个例子
 
 ```bash
-# 进项目
-cd ~/project/myapp
-
 # 起 codex 起一个开发 session(改文件场景建议先建 worktree,见 SKILL.md)
-ai-codex add-cache "给 auth 模块加 Redis 缓存避免重复查 DB" \
-  "[目标] 给 src/auth/get-user.ts 加 Redis 缓存。[约束] 不要装新依赖。[产出] 改完一句话说改了啥。"
+agent codex new add-cache "给 auth 模块加 Redis 缓存避免重复查 DB" \
+  "[目标] 给 src/auth/get-user.ts 加 Redis 缓存。[约束] 不要装新依赖。[产出] 改完一句话说改了啥。" \
+  -C ~/project/myapp
 
 # 续聊
-ai-codex-c add-cache "刚才加的缓存没处理 cache miss 时的 thundering herd,加个 SETNX 锁。"
+agent codex c add-cache "刚才加的缓存没处理 cache miss 时的 thundering herd,加个 SETNX 锁。"
 
 # 看看所有 session
-ai-sessions
+agent ls
 
 # 删
-ai-rm add-cache
+agent rm add-cache
 ```
+
+### 老命令(3 个月后移除)
+
+老命令 `ai-codex` / `ai-claude` / `ai-codex-c` / `ai-claude-c` / `ai-sessions` / `ai-rm` / `ai-incidents` / `ai-update` 仍可用,调用时会在 stderr 打 deprecation 提示。请逐步迁移到 `agent` 子命令。
 
 ## Session 数据存哪
 
@@ -121,8 +127,8 @@ ai-rm add-cache
 **查看 / 管理 incidents**:
 
 ```bash
-ai-incidents                  # 列出全部
-ai-incidents <id 关键字>      # 看详情
+agent incidents                  # 列出全部
+agent incidents <id 关键字>      # 看详情
 rm -rf ~/.ai-sessions-incidents/<id>   # 清理某个
 ```
 
@@ -137,10 +143,11 @@ export AI_WATCHDOG_KILL_CHECKS=10   # 多少次无更新 → kill
 
 | 文件 | 干嘛 |
 |---|---|
-| `shell/ai-cli.zsh` | shell 函数实现(6 个公共命令 + 内部辅助) |
+| `shell/ai-cli.zsh` | shell 函数实现(`agent` dispatcher + 4 个核心命令 + 4 个管理命令 + 老命令 alias) |
+| `bin/agent` | 单一入口 wrapper,装到 `~/.local/bin/agent`,让非交互 shell(Claude Code Bash tool / cron / systemd)也能直接用 |
 | `skills/codex-cli/SKILL.md` | 教 Claude Code 怎么调 codex CLI(开发型任务、worktree 流程、任务调度) |
 | `skills/claude-cli/SKILL.md` | 教 Claude Code 怎么调 claude CLI(方案/分析/审视型任务) |
-| `install.sh` / `uninstall.sh` | 一键安装/卸载 |
+| `install.sh` / `uninstall.sh` | 一键安装/卸载(自动建 `~/.local/bin`、铺 wrapper、检测 PATH) |
 
 ## 卸载
 
