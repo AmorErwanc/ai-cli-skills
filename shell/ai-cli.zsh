@@ -1132,5 +1132,8 @@ _agent_dispatch() {
   esac
 }
 
-# 把 agent 暴露成顶层命令(交互终端 source 时也能直接打 agent)
-agent() { _agent_dispatch "$@"; }
+# 注:不在这里定义顶层 agent() 函数。
+# agent 命令统一走 ~/.local/bin/agent wrapper(PATH 优先级 < shell 函数,所以一旦定义
+# 函数就会拦截外部 wrapper)。让 wrapper 是唯一入口,避免 shell snapshot 缓存只抓部分
+# 函数(比如 agent 有、_agent_dispatch 没)导致命令崩——这种问题在 Claude Code Bash tool
+# 等用 shell snapshot 加速启动的环境里特别容易踩。
