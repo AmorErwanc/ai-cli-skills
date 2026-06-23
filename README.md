@@ -74,6 +74,29 @@ codex/claude 没装也能装本工具,只是不能跑——装完任何一个就
 - `-e <level>` 覆盖思考强度(`low/medium/high/xhigh/max`)
 - `-C, --cwd <dir>` 工作目录(等价于先 `cd <dir>` 再起,**不传 = 当前 shell PWD**)
 
+### 协作关系(claude 是 peer,codex 是工具)
+
+这套工具的核心分层:
+
+```
+用户
+ │
+ ▼
+Claude Code  (主对话,调度方)
+ │
+ ├──► agent claude new   →  外部 claude (协作 peer)
+ │                              ├─ 出方案、跨项目读、追踪进度
+ │                              └─ 自己也能起 agent codex new 让 codex 干活 ✓ 允许
+ │
+ └──► agent codex new   →  codex (被调工具)
+                              └─ 改文件、跑命令,干完就完
+                                 不会再起新 agent session ✗ 禁套娃
+```
+
+**claude 当协作者**:能扛一段独立工作流(比如"A 项目改完表结构需要 B 项目跟改代码",claude 直接读 B、出双边方案、追踪两边进度)。它自己**不写代码**,落地实现的部分自己起 codex 子任务干。
+
+**codex 当工具**:只负责"动手改代码"。无论是 Claude Code 直接起,还是外部 claude 起,codex 都不会再起新 agent session——所以最多 claude → codex 两层,不会无限套娃。
+
 ### Safety suffix(仅 codex,claude 不加)
 
 **只有 `agent codex new/c`** 在 prompt 末尾自动追加两条约束:
@@ -81,7 +104,7 @@ codex/claude 没装也能装本工具,只是不能跑——装完任何一个就
 > 1. 不要执行 git commit 或 git push。
 > 2. 不要调用 agent 命令起新 session,避免任务套娃。
 
-`agent claude new/c` 把 prompt **原样透传**,不追加任何东西——把 claude 当协作者用,完整能力交给它(包括 commit / push / 起子 agent),需要的约束自己写进 prompt。codex 因为是被调工具(默认 `danger-full-access`),保留 safety suffix 防止它误改 git 历史或起新 session 形成套娃嵌套。
+`agent claude new/c` 把 prompt **原样透传**,不追加任何东西——把 claude 当协作者用,完整能力交给它(包括 commit / push / 起 codex 子任务),需要的约束自己写进 prompt。codex 因为是被调工具(默认 `danger-full-access`),保留 safety suffix 防止它误改 git 历史或起新 session 形成套娃嵌套。
 
 ### 一个例子(短 prompt + 长 prompt 两种)
 

@@ -75,7 +75,7 @@ shell 函数**只对 codex** 在 prompt 末尾自动追加:
 > - 不要执行 git commit 或 git push。
 > - 不要调用 agent 命令起新 session,避免任务套娃。
 
-第二条是防 codex 在 `danger-full-access` 下看到 PATH 里有 `agent` 就主动调,搞出"agent 起 codex,codex 又起 agent 起 claude"的嵌套。不用你额外手动加。
+第二条防 codex 在 `danger-full-access` 下看到 PATH 里有 `agent` 就主动调,搞出"agent 起 codex,codex 又起 agent..."的无限嵌套。**这是 codex 的硬规则,即使它是被外部 claude 起的(claude 是协作 peer,允许它起 codex 子任务)也一样——claude → codex 这一层之后就到底,codex 不会再起新 session**。
 
 > 对照:`agent claude new/c` **不追加任何 safety suffix**,prompt 原样透传。claude 当协作者用,完整能力放开;约束自己写进 prompt。详见 `claude-cli` skill。
 
