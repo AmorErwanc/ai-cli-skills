@@ -136,12 +136,21 @@ _ai_safety_suffix() {
 EOF
 }
 
-# claude peer 专属 prompt 注入:套娃 codex 时的姿势硬规则
-# 注:这条不是"安全约束",是"实操规则"——peer 想起 codex 子任务时如果用错姿势,
+# claude peer 专属 prompt 注入:任务分工 + 套娃 codex 姿势硬规则
+# 注:这不是"安全约束",是"实操规则"——peer 想起 codex 子任务时如果用错姿势,
 # codex 会被连带杀。这条规则保证 peer 每次都看得到,不依赖它主动读 SKILL.md
 _ai_claude_nesting_rule() {
   cat <<'EOF'
-你起 agent codex new 套娃任务的姿势硬规则(违反会被连带杀,实测踩坑总结):
+任务分工:涉及开发请交给 codex(否则忽略本段):
+
+- 这次任务如果涉及**正式开发**(写新功能 / 重构 / 大量改代码 / 加测试),
+  请用 agent codex new 把任务交给 codex 干,不要你自己动手:
+  - 后端类(Go/Rust/Java/数据库/分布式) → codex 强项,直接交
+  - 前端类(React/Vue/CSS/UI 框架) → 你自己干更顺手,claude 在前端比 codex 强
+- 协作类任务(出方案 / 跨项目读 / 改少量基础文件如 deploy.yaml / 配置 / 文档 / 单文件小改) → 你自己干,不必绕 codex
+- 不涉及开发就忽略上面分工。
+
+下面是你起 agent codex new 套娃任务的姿势硬规则(违反会被连带杀,实测踩坑总结):
 
 1. 用 Bash tool 跑 agent codex new 时,**禁止**用 `run_in_background: true`——
    那是 Claude Code 自己管的 background pool,你退出时会把里面任务一起清理掉
@@ -155,7 +164,7 @@ _ai_claude_nesting_rule() {
    - 并行 N 个全部等完: `agent codex new a "..." -C ... & ; agent codex new b "..." -C ... & ; wait`
    - 并行不等就退(让用户手动接力): `agent codex new a "..." -C ... & ; agent codex new b "..." -C ... &`(不带 wait)
 
-不打算起 codex 套娃就忽略上面,继续干你自己的事。
+不打算起 codex 套娃就忽略上面姿势规则,继续干你自己的事。
 EOF
 }
 
