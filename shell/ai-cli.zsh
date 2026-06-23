@@ -157,6 +157,79 @@ _ai_append_round_header() {
   } >> "$logf"
 }
 
+# 解析 claude -p --output-format stream-json 的 JSON 流
+# 把每行 JSON 事件转成人类可读输出(stdout),同时旁路把 result.result 写到 last.txt
+# 用法: <claude stream-json output> | _ai_parse_claude_stream <last_txt_path>
+# 依赖: jq(macOS brew install jq)
+_ai_parse_claude_stream() {
+  local last_txt="$1"
+  # jq 不可用 → fallback 直接透传原始 JSON 流(避免完全 break)
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "⚠ jq 未安装,无法解析 claude stream-json,full.log 将是原始 JSON。装一下:brew install jq" >&2
+    tee "$last_txt"
+    return 0
+  fi
+
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    # 容错:每行单独解析,失败就原样吐出
+    # 注:必须用 local var=$(...) 一步声明赋值,zsh 在 typeset -g 全局变量存在时
+    # local var 单独一行后跟 var=$(...) 赋值会把 var=value 泄漏到 stdout
+    local event_type=$(printf '%s' "$line" | jq -r '.type // empty' 2>/dev/null)
+    if [[ -z "$event_type" ]]; then
+      echo "$line"
+      continue
+    fi
+
+    case "$event_type" in
+      system|rate_limit_event)
+        # 跳过元信息和速率限制噪音
+        :
+        ;;
+      assistant)
+        # 遍历 message.content 数组,按 type 分发
+        printf '%s' "$line" | jq -r '
+          .message.content[]? |
+          if .type == "thinking" then
+            "[thinking…]"
+          elif .type == "tool_use" then
+            "[tool: \(.name)] \(.input | tojson)"
+          elif .type == "text" then
+            .text
+          else
+            "[unknown content type: \(.type)]"
+          end
+        ' 2>/dev/null
+        ;;
+      user)
+        # tool_result(可能很长,截断 500 字符)
+        printf '%s' "$line" | jq -r '
+          .message.content[]? |
+          if .type == "tool_result" then
+            (if (.content | type) == "string" then .content else (.content | tojson) end) as $c
+            | if ($c | length) > 500 then "[tool_result] " + ($c[:500]) + "…(truncated)" else "[tool_result] " + $c end
+          else
+            "[unknown user content: \(.type)]"
+          end
+        ' 2>/dev/null
+        ;;
+      result)
+        # final 抽到 last.txt,full.log 输出一行汇总
+        local final_text=$(printf '%s' "$line" | jq -r '.result // empty' 2>/dev/null)
+        local duration_ms=$(printf '%s' "$line" | jq -r '.duration_ms // 0' 2>/dev/null)
+        local cost=$(printf '%s' "$line" | jq -r '.total_cost_usd // 0' 2>/dev/null)
+        if [[ -n "$final_text" ]]; then
+          printf '%s' "$final_text" > "$last_txt"
+        fi
+        echo "[result] ${duration_ms}ms | \$${cost}"
+        ;;
+      *)
+        echo "[$event_type] $(printf '%s' "$line" | jq -c '. | del(.type)' 2>/dev/null)"
+        ;;
+    esac
+  done
+}
+
 # 杀进程树:用 ps + awk 一次性找所有后代,SIGKILL 杀光
 _ai_kill_tree() {
   local root=$1
@@ -487,7 +560,11 @@ $(_ai_safety_suffix)"
   printf '%s\n' "$sid" > "$sdir/sid"
 
   echo ""
-  echo "✓ codex session 'codex-$name' 已创建(sid: ${sid:0:8}…)"
+  echo ""
+  echo "✓ codex session 'codex-$name' 已创建"
+  echo "  sid: $sid"
+  echo "  原生 CLI 跳转: codex exec resume $sid \"<新 prompt>\""
+  echo "       或 codex resume(交互 picker)"
 }
 
 _agent_codex_c() {
@@ -645,7 +722,9 @@ _agent_claude_new() {
   _ai_append_round_header "$sdir/full.log" "new" 1 "$full_prompt"
 
   (
-    claude -p --session-id "$sid" ${=extra} "$full_prompt" </dev/null 2>&1 | tee -a "$sdir/full.log" | tee "$sdir/last.txt"
+    claude -p --output-format stream-json --verbose --session-id "$sid" ${=extra} "$full_prompt" </dev/null 2>&1 \
+      | _ai_parse_claude_stream "$sdir/last.txt" \
+      | tee -a "$sdir/full.log"
   ) &
   local pipeline_pid=$!
 
@@ -679,7 +758,11 @@ _agent_claude_new() {
   fi
 
   echo ""
-  echo "✓ claude session 'claude-$name' 已创建(sid: ${sid:0:8}…)"
+  echo ""
+  echo "✓ claude session 'claude-$name' 已创建"
+  echo "  sid: $sid"
+  echo "  原生 CLI 跳转: claude --resume $sid"
+  echo "       (打开 TUI 续聊那个 session)"
 }
 
 _agent_claude_c() {
@@ -734,7 +817,9 @@ _agent_claude_c() {
   _ai_append_round_header "$sdir/full.log" "resume" "$round" "$full_prompt"
 
   (
-    claude -p -r "$sid" "$full_prompt" </dev/null 2>&1 | tee -a "$sdir/full.log" | tee "$sdir/last.txt"
+    claude -p --output-format stream-json --verbose -r "$sid" "$full_prompt" </dev/null 2>&1 \
+      | _ai_parse_claude_stream "$sdir/last.txt" \
+      | tee -a "$sdir/full.log"
   ) &
   local pipeline_pid=$!
 

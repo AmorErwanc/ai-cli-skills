@@ -9,10 +9,16 @@ RAW="https://raw.githubusercontent.com/$REPO/main"
 echo "📦 安装 ai-cli-skills..."
 echo ""
 
-# === 依赖检查 ===
+# === 硬依赖检查 ===
 for cmd in zsh uuidgen git curl; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "❌ 缺少依赖:$cmd";  exit 1; }
 done
+
+# === 软依赖检查 ===
+# jq:解析 claude stream-json 流式输出(没装就 fallback 原始 JSON 进 log,但不友好)
+if ! command -v jq >/dev/null 2>&1; then
+  echo "⚠  jq 未装(claude 流式 log 解析需要):brew install jq"
+fi
 
 # === CLI 提示(不强制装) ===
 command -v codex >/dev/null 2>&1 || echo "⚠  codex CLI 未装:https://github.com/openai/codex"
