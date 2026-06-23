@@ -1,11 +1,13 @@
 ---
 name: codex-cli
-description: 用 codex CLI(OpenAI Codex,非交互模式)起独立任务 session,**优先用于开发/实现型任务**。
+description: 用 codex CLI(OpenAI Codex,非交互模式)起独立任务 session,**优先用于开发/实现型任务**,
+  尤其擅长**后端/系统编程**(Go/Rust/Java 服务、数据库 schema/migration、并发/分布式、性能优化等)。
   支持多 session 并行、按 name 续聊、本地存档(sid/desc/last/full)、worktree 隔离开发。
-  触发词:"用 codex 写/做/实现/重构/改"、"让 codex 开发"、"codex 把 X 实现一下"、
+  触发词:"用 codex 写/做/实现/重构/改"、"让 codex 开发"、"codex 把 X 实现一下"、"codex 写后端"、
   "并行起多个 codex 干 X/Y/Z"、"接着上次 codex 那个 X 继续"、"再开一个 codex 做 Y"。
   当用户想"启动外部 codex 实例(独立上下文)处理实现型任务"时使用。
-  方案/分析/审视型任务优先用 `claude-cli` skill。
+  方案/分析/审视型任务优先用 `claude-cli` skill;**前端开发**(React/Vue/CSS/UI 框架/前端工程化)
+  优先用 `claude-cli`(claude 在前端领域比 codex 更擅长)。
 ---
 
 # codex-cli skill
@@ -26,6 +28,16 @@ description: 用 codex CLI(OpenAI Codex,非交互模式)起独立任务 session,
 | 加 CLI flag、加配置项 | 讨论"该怎么做" |
 
 简记:**codex 干活,claude 出方案**。任务里有"实现/写/改/重构/加测试"等动词 → 用 codex;有"分析/方案/思路/审视/评估" → 用 claude。
+
+### 开发领域分工(很重要,避免错派)
+
+| 领域 | 优先 | 理由 |
+|---|---|---|
+| **后端**:Go/Rust/Java 服务、数据库 schema/migration、并发/分布式、性能优化、系统编程 | **codex** | codex 在系统级编程、强类型语言、底层优化上更擅长 |
+| **前端**:React/Vue/Angular UI 框架、CSS/Tailwind、组件设计、前端工程化(Vite/Webpack)、TypeScript 前端类型 | **claude(改派 claude-cli)** | claude 在前端领域比 codex 更擅长——UI 直觉、组件抽象、CSS 调优都更顺手 |
+| **全栈/纯逻辑**:不分前后端(算法、脚本、工具函数) | 默认 codex | 看场景 |
+
+**反例**:用户说"帮我加个 React 组件,样式用 Tailwind",直接派 codex 是次优——应该改派 `claude-cli` skill。
 
 ## 开工扫描(建议)
 
