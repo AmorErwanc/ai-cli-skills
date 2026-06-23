@@ -189,7 +189,8 @@ export AI_WATCHDOG_KILL_CHECKS=10   # 多少次无更新 → kill
 | `shell/ai-cli.zsh` | shell 函数实现(`agent` dispatcher + 4 个核心命令 + 4 个管理命令) |
 | `bin/agent` | 单一入口 wrapper,装到 `~/.local/bin/agent`,让非交互 shell(Claude Code Bash tool / cron / systemd)也能直接用 |
 | `skills/codex-cli/SKILL.md` | 教 Claude Code 怎么调 codex CLI(开发型任务、worktree 流程、任务调度) |
-| `skills/claude-cli/SKILL.md` | 教 Claude Code 怎么调 claude CLI(方案/分析/审视型任务) |
+| `skills/claude-cli/SKILL.md` | 教 Claude Code 怎么调 claude CLI(协作 peer 定位、跨项目协调、套娃姿势) |
+| `docs/decisions.md` | 架构决策记录(ADR)——为什么 claude/codex 这么定位、为什么关 watchdog、为什么 shell `&` 不用 `run_in_background` 等关键设计原因 |
 | `install.sh` / `uninstall.sh` | 一键安装/卸载(自动建 `~/.local/bin`、铺 wrapper、检测 PATH) |
 
 ## 卸载
