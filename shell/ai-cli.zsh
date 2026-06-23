@@ -728,28 +728,13 @@ _agent_claude_new() {
   ) &
   local pipeline_pid=$!
 
-  _ai_watchdog $pipeline_pid "$sdir" claude "$name" &
-  local wd_pid=$!
-
-  # Polling 等 pipeline 自然死或被 watchdog kill
-  # 用 ps -p 而非 wait/kill -0,绕开 zsh job control 在子 shell 上的不确定行为
-  while ps -p $pipeline_pid >/dev/null 2>&1 && [[ ! -f "$sdir/.killed-by-watchdog" ]]; do
+  # claude 不起 watchdog——协作 peer 定位,允许它等多个并行 codex 套娃跑很久;
+  # 真卡死靠用户 Ctrl-C 兜底。codex 那边仍有 watchdog 保护工具型任务。
+  while ps -p $pipeline_pid >/dev/null 2>&1; do
     sleep 0.5
   done
-  local exit_code=0
-  if [[ -f "$sdir/.killed-by-watchdog" ]]; then
-    exit_code=137
-    rm -f "$sdir/.killed-by-watchdog"
-  fi
-
-  # 清理 watchdog(它可能还活着,kill 它)
-  kill -KILL $wd_pid 2>/dev/null
-  # 等 wd_pid 真正死(ps -p)
-  local wd_wait=0
-  while ps -p $wd_pid >/dev/null 2>&1 && (( wd_wait < 6 )); do
-    sleep 0.5
-    wd_wait=$((wd_wait + 1))
-  done
+  wait $pipeline_pid 2>/dev/null
+  local exit_code=$?
 
   if (( exit_code != 0 )); then
     echo ""
@@ -823,28 +808,12 @@ _agent_claude_c() {
   ) &
   local pipeline_pid=$!
 
-  _ai_watchdog $pipeline_pid "$sdir" claude "$name" &
-  local wd_pid=$!
-
-  # Polling 等 pipeline 自然死或被 watchdog kill
-  # 用 ps -p 而非 wait/kill -0,绕开 zsh job control 在子 shell 上的不确定行为
-  while ps -p $pipeline_pid >/dev/null 2>&1 && [[ ! -f "$sdir/.killed-by-watchdog" ]]; do
+  # claude 不起 watchdog(同 new 函数说明)
+  while ps -p $pipeline_pid >/dev/null 2>&1; do
     sleep 0.5
   done
-  local exit_code=0
-  if [[ -f "$sdir/.killed-by-watchdog" ]]; then
-    exit_code=137
-    rm -f "$sdir/.killed-by-watchdog"
-  fi
-
-  # 清理 watchdog(它可能还活着,kill 它)
-  kill -KILL $wd_pid 2>/dev/null
-  # 等 wd_pid 真正死(ps -p)
-  local wd_wait=0
-  while ps -p $wd_pid >/dev/null 2>&1 && (( wd_wait < 6 )); do
-    sleep 0.5
-    wd_wait=$((wd_wait + 1))
-  done
+  wait $pipeline_pid 2>/dev/null
+  local exit_code=$?
 
   if (( exit_code != 0 )); then
     echo ""
