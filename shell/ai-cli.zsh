@@ -136,6 +136,29 @@ _ai_safety_suffix() {
 EOF
 }
 
+# claude peer 专属 prompt 注入:套娃 codex 时的姿势硬规则
+# 注:这条不是"安全约束",是"实操规则"——peer 想起 codex 子任务时如果用错姿势,
+# codex 会被连带杀。这条规则保证 peer 每次都看得到,不依赖它主动读 SKILL.md
+_ai_claude_nesting_rule() {
+  cat <<'EOF'
+你起 agent codex new 套娃任务的姿势硬规则(违反会被连带杀,实测踩坑总结):
+
+1. 用 Bash tool 跑 agent codex new 时,**禁止**用 `run_in_background: true`——
+   那是 Claude Code 自己管的 background pool,你退出时会把里面任务一起清理掉
+   (实测:codex sleep 90s 任务,你退出 11s 后 codex 8s 内被杀,产出文件根本没生成)
+
+2. 必须用 `run_in_background: false`(同步 bash) + 命令本身用 shell `&` 控制后台,
+   shell `&` 是真 fork detach,子进程被 init 收养,你退出也杀不掉
+
+3. 三种典型姿势:
+   - 单 codex 同步: `agent codex new task "..." -C ...`(不带 &,你等它完)
+   - 并行 N 个全部等完: `agent codex new a "..." -C ... & ; agent codex new b "..." -C ... & ; wait`
+   - 并行不等就退(让用户手动接力): `agent codex new a "..." -C ... & ; agent codex new b "..." -C ... &`(不带 wait)
+
+不打算起 codex 套娃就忽略上面,继续干你自己的事。
+EOF
+}
+
 _ai_round_count() {
   local logf="$1"
   if [[ -f "$logf" ]]; then
@@ -716,8 +739,11 @@ _agent_claude_new() {
   [[ -n "$model" ]] && extra="$extra --model $model"
   [[ -n "$effort" ]] && extra="$extra --effort $effort"
 
-  # claude 当协作者用,直接透传 prompt,不追加 safety suffix
-  local full_prompt="$prompt"
+  # claude peer:不加 safety 约束(协作者完整能力放开),但追加套娃硬规则
+  # (避免 peer 起 codex 用错姿势被连带杀,实测踩坑;详见 _ai_claude_nesting_rule)
+  local full_prompt="$prompt
+
+$(_ai_claude_nesting_rule)"
 
   _ai_append_round_header "$sdir/full.log" "new" 1 "$full_prompt"
 
@@ -796,8 +822,10 @@ _agent_claude_c() {
     cp "$prompt_file" "$sdir/prompt-round-$round.md" || echo "⚠ archive prompt 文件失败,session 仍会继续(详见 stderr)" >&2
   fi
 
-  # claude 当协作者用,直接透传 prompt,不追加 safety suffix
-  local full_prompt="$prompt"
+  # claude peer:同 new 函数,追加套娃硬规则(详见 _ai_claude_nesting_rule)
+  local full_prompt="$prompt
+
+$(_ai_claude_nesting_rule)"
 
   _ai_append_round_header "$sdir/full.log" "resume" "$round" "$full_prompt"
 
