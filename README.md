@@ -74,14 +74,14 @@ codex/claude 没装也能装本工具,只是不能跑——装完任何一个就
 - `-e <level>` 覆盖思考强度(`low/medium/high/xhigh/max`)
 - `-C, --cwd <dir>` 工作目录(等价于先 `cd <dir>` 再起,**不传 = 当前 shell PWD**)
 
-### Safety suffix(每条 prompt 自动追加)
+### Safety suffix(仅 codex,claude 不加)
 
-shell 函数在每条 prompt 末尾追加两条约束:
+**只有 `agent codex new/c`** 在 prompt 末尾自动追加两条约束:
 
 > 1. 不要执行 git commit 或 git push。
 > 2. 不要调用 agent 命令起新 session,避免任务套娃。
 
-第 2 条防 codex/claude 在 `danger-full-access` / `bypassPermissions` 模式下主动起新 session 形成嵌套。Claude Code 当外层调度方,被起的 codex/claude 当执行方,不再嵌套。
+`agent claude new/c` 把 prompt **原样透传**,不追加任何东西——把 claude 当协作者用,完整能力交给它(包括 commit / push / 起子 agent),需要的约束自己写进 prompt。codex 因为是被调工具(默认 `danger-full-access`),保留 safety suffix 防止它误改 git 历史或起新 session 形成套娃嵌套。
 
 ### 一个例子(短 prompt + 长 prompt 两种)
 

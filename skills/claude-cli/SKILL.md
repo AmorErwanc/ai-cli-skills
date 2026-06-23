@@ -71,17 +71,18 @@ agent ls
 - **[约束]** 不能改什么(方案类默认 **"只分析,不改任何文件"**)、输出语言
 - **[产出]** 形式(方案对比表/清单/利弊分析)+ 长度(如 "500 字内")
 
-## 安全约束(自动追加)
+## Prompt 原样透传(不追加任何约束)
 
-shell 函数自动在每条 prompt 末尾追加:
+**`agent claude new/c` 把 prompt 完整原样传给 claude,末尾不追加任何 safety suffix**。claude 在这套工作流里被当作"协作者"使用,完整能力交给它——包括 git commit/push、起新 agent session 等,都不自动禁。
 
-> 约束:
-> - 不要执行 git commit 或 git push。
-> - 不要调用 agent 命令起新 session,避免任务套娃。
+代价:任何想加的约束你都得**自己写进 prompt**。常见模板:
 
-第二条防 claude 在 `bypassPermissions` 模式下看到 PATH 里有 `agent` 就主动调,搞出嵌套 session。不用你额外手动加。
+- 只读分析任务: `[约束] 只分析,不要修改任何文件。不要 git commit/push。`
+- 不让它再套娃: `[约束] 不要调用 agent 命令起新 session。`
 
-⚠️ claude 默认 `bypassPermissions` 模式——**会改文件**。方案/分析类任务务必在 prompt 里显式写"约束:只分析,不要修改任何文件"。
+⚠️ claude 默认 `bypassPermissions` 模式——**会改文件**。方案/分析类任务务必在 prompt 里显式写约束,不然它真的会动手。
+
+> 对照:`agent codex new/c` **保留** safety suffix(自动加"不要 git commit/push"和"不要套娃"两条),因为 codex 是被调工具,默认更危险(`danger-full-access`)。详见 `codex-cli` skill。
 
 ## 改文件场景:也要 worktree
 

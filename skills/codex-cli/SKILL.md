@@ -67,15 +67,17 @@ agent ls
 
 不必死板贴 `[目标]` 这种标签,关键是**五个维度都覆盖**。
 
-## 安全约束(自动追加)
+## 安全约束(仅 codex 自动追加)
 
-shell 函数自动在每条 prompt 末尾追加:
+shell 函数**只对 codex** 在 prompt 末尾自动追加:
 
 > 约束:
 > - 不要执行 git commit 或 git push。
 > - 不要调用 agent 命令起新 session,避免任务套娃。
 
 第二条是防 codex 在 `danger-full-access` 下看到 PATH 里有 `agent` 就主动调,搞出"agent 起 codex,codex 又起 agent 起 claude"的嵌套。不用你额外手动加。
+
+> 对照:`agent claude new/c` **不追加任何 safety suffix**,prompt 原样透传。claude 当协作者用,完整能力放开;约束自己写进 prompt。详见 `claude-cli` skill。
 
 ⚠️ codex 默认 `sandbox_mode = danger-full-access`——它**真的会改文件、跑命令**。让它"只分析不改文件"的任务务必显式写"不要修改任何文件"。
 

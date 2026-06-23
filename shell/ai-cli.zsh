@@ -639,9 +639,8 @@ _agent_claude_new() {
   [[ -n "$model" ]] && extra="$extra --model $model"
   [[ -n "$effort" ]] && extra="$extra --effort $effort"
 
-  local full_prompt="$prompt
-
-$(_ai_safety_suffix)"
+  # claude 当协作者用,直接透传 prompt,不追加 safety suffix
+  local full_prompt="$prompt"
 
   _ai_append_round_header "$sdir/full.log" "new" 1 "$full_prompt"
 
@@ -729,9 +728,8 @@ _agent_claude_c() {
     cp "$prompt_file" "$sdir/prompt-round-$round.md" || echo "⚠ archive prompt 文件失败,session 仍会继续(详见 stderr)" >&2
   fi
 
-  local full_prompt="$prompt
-
-$(_ai_safety_suffix)"
+  # claude 当协作者用,直接透传 prompt,不追加 safety suffix
+  local full_prompt="$prompt"
 
   _ai_append_round_header "$sdir/full.log" "resume" "$round" "$full_prompt"
 
