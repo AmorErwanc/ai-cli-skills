@@ -160,6 +160,21 @@ agent ls codex      # 只看 codex
 agent rm add-cache
 ```
 
+## 起 session 前的同步钩子(可选,默认无感)
+
+如果你有一套"全局提示词动态生成"的机制(源文件 → 生成产物),通常会把触发点挂在 shell 的 `codex()` / `claude()` 包装函数上。但 **`agent` 是独立进程、不读 zshrc**,那层包装对它不存在——走 `agent` 起的 session 会**静默跳过**同步,外部 AI 拿到旧提示词且不报任何错。
+
+wrapper 因此在起 codex/claude 前会跑一次同步钩子:
+
+- 默认路径 `~/.agents/bin/sync-instructions`,**不存在就静默跳过**(没有这套机制的用户完全无感)
+- 用 `AI_SYNC_HOOK` 指定别的脚本;设成空字符串 `AI_SYNC_HOOK=""` 则彻底禁用
+- **同步失败只警告,不阻断任务**——agent 常在后台/并发跑,为了提示词旧一点就让整个任务起不来不划算
+
+```bash
+export AI_SYNC_HOOK="$HOME/bin/my-prompt-sync"   # 换成自己的脚本
+export AI_SYNC_HOOK=""                            # 关掉
+```
+
 ## Session 数据存哪
 
 ```

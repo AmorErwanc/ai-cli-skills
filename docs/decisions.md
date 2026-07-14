@@ -7,6 +7,7 @@
 
 | 编号 | 标题 | 状态 | 决策日期 | 最近更新 | 标签 |
 |---|---|---|---|---|---|
+| [ADR-010](#adr-010) | 起 session 前跑可选同步钩子(补上 agent 绕过 zshrc 的缺口) | Accepted | 2026-07-14 | 2026-07-14 | 提示词同步 / 进程模型 |
 | [ADR-009](#adr-009) | `-m`/`-e` 收窄成白名单 + 续聊沿用 + claude 强制 1M 变体 | Accepted | 2026-07-14 | 2026-07-14 | 参数设计 / 防呆 |
 | [ADR-008](#adr-008) | claude -p 走 stream-json,过程流式输出跟 codex 一致 | Accepted | 2026-06-23 | 2026-06-23 | UX / 工具一致性 |
 | [ADR-007](#adr-007) | 套娃 codex 用 shell `&`,不用 Bash tool `run_in_background:true` | Accepted | 2026-06-23 | 2026-06-23 | 套娃 / 进程模型 |
@@ -16,6 +17,63 @@
 | [ADR-003](#adr-003) | claude=协作 peer,codex=工具(差异化定位 + safety suffix 差异) | Accepted | 2026-06-22 | 2026-06-23 | 角色定位 / 安全约束 |
 | [ADR-002](#adr-002) | 移除顶层 `agent()` shell 函数,wrapper 是唯一入口 | Accepted | 2026-06-22 | 2026-06-22 | 函数管理 / shell snapshot |
 | [ADR-001](#adr-001) | 统一入口 `agent` 命令,移除 8 个 `ai-*` 老命令 | Accepted | 2026-06-22 | 2026-06-22 | CLI 入口 / UX |
+
+---
+
+<a id="adr-010"></a>
+
+## ADR-010 · 起 session 前跑可选同步钩子(补上 agent 绕过 zshrc 的缺口)
+
+- **状态**：Accepted
+- **决策日期**：2026-07-14
+- **最近更新**：2026-07-14
+- **标签**：提示词同步 / 进程模型
+- **关联代码**：`shell/ai-cli.zsh`（`_ai_sync_instructions`,在四个 `_agent_*_new|c` 起 CLI 前调用）
+- **关联文档**：`README.md`（同步钩子段）
+- **关联决策**：`related ADR-002`(同一个 shell snapshot 坑的另一次发作)
+
+### 背景
+
+用户机器上有一套「全局提示词动态生成」机制:源文件(`~/.agents/instructions/`)拼接生成产物(`~/.claude/CLAUDE.md` / `~/.codex/AGENTS.md`)。触发点挂在 zshrc 里的 `codex()` / `claude()` 包装函数上——每次启动前先重新生成,生成失败就拒绝启动。
+
+**但 `agent` 完全绕过了这套机制。** `bin/agent` 是 `#!/bin/zsh` 的独立进程,非交互 shell **不读 `.zshrc`**,所以 zshrc 里的包装函数在它进程里根本不存在。agent 内部调 `codex exec` 走 PATH 直接命中真二进制。实测:
+
+```
+交互 shell:   codex is a shell function from /Users/edy/.zshrc   ← 会同步
+非交互 shell: codex is /Users/edy/.npm-global/bin/codex          ← 跳过同步
+```
+
+后果:**走 agent 起的所有 session 都静默跳过提示词同步**。改完提示词源文件后直接起 agent session,外部 AI 拿到的是旧提示词,**不报任何错**,用户无从察觉。而这恰恰是本工具的主力用法——用户起 codex/claude 基本都走 agent,反而是"挂了钩子"的那条路(手敲 codex)用得最少。
+
+> 顺带:zshrc 那两个包装函数当时还处于**坏掉**的状态——它们调用了一个下划线前缀的内部函数,而 Claude Code 的 shell snapshot **只快照公开函数、不抓内部函数**,导致在 Claude Code Bash tool 里 `codex` / `claude` 一调就 `command not found`。这是 ADR-002 那个坑的原样复发(只是这次发生在用户 zshrc 而非本项目)。修法同 ADR-002:去掉内部函数依赖,直接内联。
+
+### 决策
+
+wrapper 在起 codex/claude 前跑一次 `_ai_sync_instructions`,把 agent 这条漏掉的路径补上。四个入口(`codex new/c` + `claude new/c`)全挂。
+
+三条设计约束:
+
+1. **脚本不存在 → 静默跳过**。本项目开源,别人机器上没有 `~/.agents/bin/sync-instructions`,不该因此报错或警告
+2. **同步失败 → 只 warn 不阻断**。这跟 zshrc 那层"失败就拒绝启动"的取舍**刻意不同**:交互终端里用户能立刻看到并处理,而 agent 常在后台 / 并发跑,为了提示词旧一点就让整个任务起不来不划算
+3. **可配置 / 可关**。`AI_SYNC_HOOK` 覆盖路径,显式设成空字符串则彻底禁用。实现上用 `${VAR-default}` 而非 `${VAR:-default}`——只有前者能让 `AI_SYNC_HOOK=""` 真正禁用而不是回落默认值
+
+### 后果
+
+**正面**
+- agent 起的 session 终于能拿到最新提示词,消除了一个**完全静默**的失效模式
+- 对没有这套机制的用户零感知(脚本不存在直接跳过)
+- 可关、可换路径,不把作者的私有路径写死进开源项目的行为里
+
+**负面 / 兼容性**
+- 每起一个 session 多几百毫秒(同步脚本执行时间)
+- **并发起多个 codex 时会抢锁**:同步脚本内部有 `mkdir` 锁 + 50 次重试,N 个 session 并行启动会串行等锁。N 小时(≤5)影响可忽略,N 很大时值得关注
+- 治标不治本:这是"在每条起 AI 的路径上挂钩子"的思路,以后再多一条路径(IDE 插件 / cron / 别的工具)还得再补一次,容易再漏。根治要靠"源文件一改就自动重生成",但那需要另搭文件监听 / 定时机制,当前只有两条路径,不值得
+
+### 替代方案
+
+- **A. 不管,保持现状**:靠用户记得"改完提示词先在终端敲一下 codex"。已否决,原因:失效是**静默**的——忘了就是忘了,外部 AI 拿着旧提示词干活不报错。而且主力路径(agent)恰好是没挂钩子的那条
+- **B. 让提示词产物本身永远是新的**(源文件改动触发重生成 / 定时跑),而不是在启动路径上挂钩子。**这是更根本的解法**——路径无关,以后不管从哪起 AI 都拿到新提示词,不用逐个补钩子。已否决(暂时),原因:需要另搭文件监听或定时机制,复杂度更高;当前只有"手敲"和"agent"两条路径,补齐即可。**路径变多时应重新评估此方案**
+- **C. 把 `agent` 改成 shell 函数,让它能继承 zshrc 的包装**:那样 agent 内部调 codex 就会命中 zshrc 的函数。已否决,原因:直接违反 ADR-002——顶层 shell 函数正是被 shell snapshot 坑过才移除的;而且会让 agent 的行为依赖"当前 shell 是否 source 过 zshrc",在 cron / CI 等环境下不可靠
 
 ---
 

@@ -137,6 +137,31 @@ EOF
 }
 
 # ------------------------------------------------------------
+# 起外部 CLI 前的可选同步钩子
+#
+# 背景:用户可能有一套"全局提示词动态生成"机制(源文件 → 生成产物),把触发点挂在
+# zshrc 的 codex()/claude() 包装函数上。但 agent wrapper 是**独立 zsh 进程、不读 zshrc**,
+# 那层包装对它根本不存在——于是走 agent 起的 session 会静默跳过同步,外部 AI 拿到旧提示词,
+# 且不报任何错。这里把这条漏掉的路径补上。
+#
+# 两个刻意的设计:
+# 1. 脚本不存在 → 静默跳过。本项目是开源的,别人机器上没有这东西,不该因此报错
+# 2. 同步失败 → 只 warn 不阻断。跟 zshrc 那层"失败就拒绝启动"的取舍不同:交互终端里
+#    用户能立刻看到并处理,而 agent 常在后台/并发跑,阻断整个任务的代价远大于用旧提示词
+#
+# AI_SYNC_HOOK 环境变量可覆盖路径;显式设成空字符串则完全禁用。
+# 注意用 ${VAR-default} 而非 ${VAR:-default}:前者才能让 AI_SYNC_HOOK="" 真正禁用。
+# ------------------------------------------------------------
+_ai_sync_instructions() {
+  local hook="${AI_SYNC_HOOK-$HOME/.agents/bin/sync-instructions}"
+  [[ -n "$hook" && -x "$hook" ]] || return 0
+  # 丢 stdout(正常的进度输出会干扰 session 输出),保留 stderr(失败原因要看得到)
+  "$hook" >/dev/null \
+    || echo "⚠ 全局提示词同步失败($hook),继续用现有提示词起 session" >&2
+  return 0
+}
+
+# ------------------------------------------------------------
 # 模型 / 思考强度白名单
 #
 # 白名单是刻意收窄的:两个 CLI 各自认识的取值远不止这些(codex 还支持
@@ -643,6 +668,7 @@ _agent_codex_new() {
 
 $(_ai_safety_suffix)"
 
+  _ai_sync_instructions
   _ai_append_round_header "$sdir/full.log" "new" 1 "$full_prompt"
 
   # 启动 codex 在子 shell 后台(watchdog 监控 sdir/full.log)
@@ -771,6 +797,7 @@ _agent_codex_c() {
 
 $(_ai_safety_suffix)"
 
+  _ai_sync_instructions
   _ai_append_round_header "$sdir/full.log" "resume" "$round" "$full_prompt"
 
   (
@@ -882,6 +909,7 @@ _agent_claude_new() {
 
 $(_ai_claude_nesting_rule)"
 
+  _ai_sync_instructions
   _ai_append_round_header "$sdir/full.log" "new" 1 "$full_prompt"
 
   (
@@ -990,6 +1018,7 @@ _agent_claude_c() {
 
 $(_ai_claude_nesting_rule)"
 
+  _ai_sync_instructions
   _ai_append_round_header "$sdir/full.log" "resume" "$round" "$full_prompt"
 
   (
