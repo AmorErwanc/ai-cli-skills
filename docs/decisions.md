@@ -7,6 +7,7 @@
 
 | 编号 | 标题 | 状态 | 决策日期 | 最近更新 | 标签 |
 |---|---|---|---|---|---|
+| [ADR-009](#adr-009) | `-m`/`-e` 收窄成白名单 + 续聊沿用 + claude 强制 1M 变体 | Accepted | 2026-07-14 | 2026-07-14 | 参数设计 / 防呆 |
 | [ADR-008](#adr-008) | claude -p 走 stream-json,过程流式输出跟 codex 一致 | Accepted | 2026-06-23 | 2026-06-23 | UX / 工具一致性 |
 | [ADR-007](#adr-007) | 套娃 codex 用 shell `&`,不用 Bash tool `run_in_background:true` | Accepted | 2026-06-23 | 2026-06-23 | 套娃 / 进程模型 |
 | [ADR-006](#adr-006) | claude 套娃硬规则通过 prompt 注入,不是 SKILL.md 教学 | Accepted | 2026-06-23 | 2026-06-23 | 提示词注入 / 协作 peer |
@@ -15,6 +16,89 @@
 | [ADR-003](#adr-003) | claude=协作 peer,codex=工具(差异化定位 + safety suffix 差异) | Accepted | 2026-06-22 | 2026-06-23 | 角色定位 / 安全约束 |
 | [ADR-002](#adr-002) | 移除顶层 `agent()` shell 函数,wrapper 是唯一入口 | Accepted | 2026-06-22 | 2026-06-22 | 函数管理 / shell snapshot |
 | [ADR-001](#adr-001) | 统一入口 `agent` 命令,移除 8 个 `ai-*` 老命令 | Accepted | 2026-06-22 | 2026-06-22 | CLI 入口 / UX |
+
+---
+
+<a id="adr-009"></a>
+
+## ADR-009 · `-m`/`-e` 收窄成白名单 + 续聊沿用 + claude 强制 1M 变体
+
+- **状态**：Accepted
+- **决策日期**：2026-07-14
+- **最近更新**：2026-07-14
+- **标签**：参数设计 / 防呆
+- **关联代码**：`shell/ai-cli.zsh`（`_ai_validate_effort` / `_ai_validate_codex_model` / `_ai_resolve_claude_model` / `_ai_save_session_opts`,以及四个 `_agent_*_new|c` 的参数解析）
+- **关联文档**：`README.md`（模型/思考强度段）+ 两份 SKILL.md（文末「模型 / 思考强度」段）
+- **关联决策**：—
+
+### 背景
+
+`-m`（模型）/ `-e`（思考强度）两个 flag 一直存在,但处于半成品状态,盘出三个问题:
+
+**1. 取值没有任何校验,也没有可选值清单。** 帮助文档只写了 `low/medium/high/xhigh/max`,但那只是拍脑袋写的,没人核对过两个 CLI 到底吃什么。实测(挖二进制 + 真跑)才发现真实枚举是:
+
+| CLI | 实际支持的 effort |
+|---|---|
+| codex | `none` `minimal` `low` `medium` `high` `xhigh` `max` `ultra` |
+| claude | `low` `medium` `high` `xhigh` `max`(官方 `--help` 口径) |
+
+模型侧同理:codex 认识十几个 gpt-5.x(`gpt-5.6-sol/luna/terra`、`gpt-5.5-pro`、`gpt-5.1-codex-max`…),claude 认识 alias + `[1m]` 变体 + 一堆全名。**全都没有清单,传什么都往下透传**,错值要等打到服务端才炸。
+
+**2. 续聊完全不接受这两个 flag。** `_agent_codex_c` / `_agent_claude_c` 的参数解析里根本没有 `-m`/`-e`。后果:首轮 `-m gpt-5.6-luna -e high` 起的 session,一续聊就回落 config 默认(`gpt-5.6-sol` + `medium`)——**同一个 session 跨轮换了脑子,且无任何提示**。
+
+**3. claude 显式指定模型会导致上下文降级。** 本机默认是 `opus[1m]`(1M 长上下文)。而裸 alias `opus` 拿到的是标准上下文窗口。也就是说 `-m opus` 这个看起来"没换模型"的操作,实际把上下文从 1M 悄悄缩回标准档——纯粹的能力降级,无提示。
+
+另外文档里的默认值描述早已过时(写 codex "gpt-5.5 + xhigh"、claude "Opus 4.7 + xhigh",实际是 `gpt-5.6-sol` + `medium` / `opus[1m]` + 未配 effort)。
+
+### 决策
+
+**a. 白名单收窄,传错本地即报错**
+
+| | `-m` | `-e` |
+|---|---|---|
+| codex | `gpt-5.6-sol`、`gpt-5.6-luna` | `low` `medium` `high` `xhigh` `max` |
+| claude | `opus`、`sonnet`、`fable` | 同上 |
+
+刻意**不开放** codex 独有的 `none`/`minimal`/`ultra` 和其余模型:档位铺太开只会让调用方选择困难、选错。想用别的值 → 改本机 config,或直接用原生 CLI。白名单外的值本地拦下并列出可选值,不透传。
+
+**b. 默认不传,只有用户明说才传**
+
+不传 = 走本机 config,这是默认且推荐路径。两份 SKILL.md 明确写"**不要自己按任务性质替用户决定用什么模型/思考强度**——成本和耗时的取舍是用户的决策"。**没有**给 AI 一张"什么任务用什么档"的决策表(见替代方案 B)。
+
+**c. 续聊沿用首轮**
+
+`new` 时的 model/effort 落到 `.ai-sessions/<cli>-<name>/{model,effort}`,续聊不传就读回来沿用;显式传则覆盖**并更新记录**,成为之后各轮的新默认(换档就是换了,不是只换一轮)。没传过就没这两个文件 = 该 session 一直走 config。
+
+> **两条实现约束(codex 独立审查抓出来的,踩过才知道)**:
+> 1. **写盘必须在所有校验通过之后**。初版把 `_ai_save_session_opts` 写在校验前,结果续聊传一个白名单外的模型 → 非法值先落盘、再被拒 → 之后每轮续聊都读回这个脏值、每轮都失败,**session 直接报废**,用户不手动 `rm` 救不回来。
+> 2. **沿用回来的值也要再校验一次**。只校验显式传入的值是不够的——session 文件可能被手改,或是旧版本遗留的脏数据,不校验就直接透传给 CLI。校验失败时提示该值来自哪个文件、删掉即可重置。
+
+**d. claude 三个 alias 强制映射到 `[1m]` 变体**
+
+`opus` → `opus[1m]`、`sonnet` → `sonnet[1m]`、`fable` → `fable[1m]`。session 里存**原始 alias**(`sonnet`),不存映射后的值——续聊读回来还要再过一次白名单校验。
+
+实现上顺带把 `${=extra}` 字符串拼接改成**数组**(`local -a extra=()`):模型名 `opus[1m]` 含方括号,zsh word-split 展开容易踩 glob 坑,数组展开是安全的。
+
+### 后果
+
+**正面**
+- 传错值本地立刻报错并列出可选,不再等服务端 400
+- 同一 session 跨轮不再换脑子——`session` 的语义终于成立
+- `-m opus` 不再意外把上下文从 1M 缩回标准档
+- 白名单小到能一眼记住(2 个 codex 模型 / 3 个 claude 模型 / 5 档 effort)
+- 顺带订正了 README + 两份 SKILL 里过时的默认值描述
+
+**负面 / 兼容性**
+- 白名单是**硬编码**的:模型换代(gpt-5.7 / opus-4-9 出来)必须手改 `_ai_validate_codex_model` 等函数,忘了改就用不上新模型。这是刻意的取舍——宁可到期手动更新,也不要一个谁都不校验的黑洞
+- codex 的 `none`/`minimal`/`ultra` 三档确实有场景(机械批量改动用 minimal 省时省钱、真难的架构题用 ultra),现在够不着。等真有需求再加,不预先开
+- claude 强制 `[1m]` 意味着**无法**通过 `-m` 选标准上下文版本。判断是:没人会想主动要更小的上下文窗口
+
+### 替代方案
+
+- **A. 不做白名单,原样透传给 CLI**:保持现状,让 CLI 自己报错。已否决,原因:错值要等打到服务端才炸(慢、且报错信息是英文 API 错误,不友好);而且没有清单,调用方(尤其 AI)根本不知道能传什么,只能猜
+- **B. 给 AI 一张「按任务性质选档」的决策表**(机械改动 → low、架构/并发 → xhigh):让 AI 自动选。已否决,原因:模型和思考强度直接决定**成本和耗时**,这是用户的决策不是 AI 的。AI 自动选会让每次调用的开销不可预测;而且"什么算机械改动"判断很容易错。保持"默认走 config,用户明说才换"最可预测
+- **C. 续聊回落 config 默认,不沿用首轮**:行为更简单。已否决,原因:首轮指定的模型续聊就丢,同一 session 跨轮换脑子——这是 bug 不是 feature
+- **D. claude 白名单同时开放裸 alias 和 `[1m]` 变体**(6 个值):让调用方自己选。已否决,原因:多记 3 个值,且"选裸 alias"这个选项本身就是个陷阱(悄悄降级上下文),没有正当使用场景
 
 ---
 

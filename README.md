@@ -70,9 +70,36 @@ codex/claude 没装也能装本工具,只是不能跑——装完任何一个就
   文件内容会自动 archive 到 `<session>/prompt.md`(new)或 `prompt-round-N.md`(续聊),方便复盘。
 
 可选 flag(默认不传,走 config):
-- `-m <model>` 覆盖模型
-- `-e <level>` 覆盖思考强度(`low/medium/high/xhigh/max`)
+- `-m <model>` 指定模型
+- `-e <level>` 指定思考强度
 - `-C, --cwd <dir>` 工作目录(等价于先 `cd <dir>` 再起,**不传 = 当前 shell PWD**)
+
+### 模型 / 思考强度(`-m` / `-e`)
+
+**默认不传就对了**——不传 = 走本机 `~/.codex/config.toml` / `~/.claude/settings.json`。只有明确想换档时才传。
+
+| | `-m` 可选模型 | `-e` 可选思考强度 |
+|---|---|---|
+| **codex** | `gpt-5.6-sol`、`gpt-5.6-luna` | `low` `medium` `high` `xhigh` `max` |
+| **claude** | `opus`、`sonnet`、`fable` | `low` `medium` `high` `xhigh` `max` |
+
+三条规则:
+
+- **白名单外的值直接报错**,不透传给 CLI。两个 CLI 认识的取值其实远不止这些(codex 还吃 `none`/`minimal`/`ultra` 和十几个 gpt-5.x 模型),但档位铺太开只会让人选错——想用别的值请直接改本机 config。
+- **claude 的三个模型都自动解析成 1M 长上下文变体**(`opus` → `opus[1m]`)。裸 alias 拿到的是标准上下文窗口,而本机默认配的就是 `opus[1m]`;不做这层映射的话,"显式指定 opus" 反而会把上下文从 1M 悄悄缩回标准档,是纯粹的能力降级。
+- **new 时传了会记进 session,续聊自动沿用**同一档,不会中途换脑子。续聊显式传则覆盖,并成为之后各轮的新默认。
+
+```bash
+# 默认(推荐):不传,走本机 config
+agent codex new fix-auth "修登录态失效的边界问题" "<prompt>"
+
+# 换档:显式指定
+agent codex new audit-pay "审计支付并发安全" "<prompt>" -m gpt-5.6-luna -e xhigh
+agent claude new eval-x "评估缓存选型" "<prompt>" -m sonnet -e high
+
+# 续聊自动沿用 luna + xhigh,不用重复传
+agent codex c audit-pay "刚才漏了退款路径,补一下"
+```
 
 ### 协作关系(claude 是 peer,codex 是工具)
 
@@ -139,9 +166,13 @@ agent rm add-cache
 <主项目根>/.ai-sessions/<cli>-<name>/
   sid          # session UUID
   desc         # 描述
+  model        # 起 session 时指定的模型(没指定就没这个文件 = 走 config)
+  effort       # 起 session 时指定的思考强度(同上)
   last.txt     # 最新一轮的最终回答(覆盖式)
   full.log     # 完整流式输出累加(看过程、工具调用)
 ```
+
+`model` / `effort` 是续聊沿用的依据——没有这两个文件就说明该 session 一直走本机 config 默认。
 
 **永远落在主项目根**——通过 `git rev-parse --git-common-dir` 定位,worktree 里跑也回到主项目,worktree 删除不丢 session。
 
@@ -203,7 +234,7 @@ curl -fsSL https://raw.githubusercontent.com/AmorErwanc/ai-cli-skills/main/unins
 
 ## 设计要点
 
-- **默认零配置**:model / effort / 权限全走用户已有的 `~/.codex/config.toml` 和 `~/.claude/settings.json`
+- **默认零配置**:model / effort / 权限全走用户已有的 `~/.codex/config.toml` 和 `~/.claude/settings.json`;`-m` / `-e` 只在明确要换档时才传,且只开放收窄过的白名单
 - **session 集中管理**:主项目根的 `.ai-sessions/`,跨 worktree 共享
 - **name 撞车立即报错**:绝不静默接错 session(防止旧上下文污染新任务)
 - **必带 desc**:≥ 15 字,半年后回来还看得懂自己起的 session 在干啥
