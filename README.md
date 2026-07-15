@@ -126,10 +126,11 @@ Claude Code  (主对话,调度方)
 
 ### Safety suffix(仅 codex,claude 不加)
 
-**只有 `agent codex new/c`** 在 prompt 末尾自动追加两条约束:
+**只有 `agent codex new/c`** 在 prompt 末尾自动追加两条约束和一行管理指纹:
 
 > 1. 不要执行 git commit 或 git push。
 > 2. 不要调用 agent 命令起新 session,避免任务套娃。
+> 3. `[managed-by ai-cli-skills]`
 
 `agent claude new/c` 把 prompt **原样透传**,不追加任何东西——把 claude 当协作者用,完整能力交给它(包括 commit / push / 起 codex 子任务),需要的约束自己写进 prompt。codex 因为是被调工具(默认 `danger-full-access`),保留 safety suffix 防止它误改 git 历史或起新 session 形成套娃嵌套。
 
@@ -192,6 +193,8 @@ export AI_SYNC_HOOK=""                            # 关掉
 **永远落在主项目根**——通过 `git rev-parse --git-common-dir` 定位,worktree 里跑也回到主项目,worktree 删除不丢 session。
 
 `.ai-sessions/` 自带 `.gitignore`(内容 `*`),不会被 commit。
+
+此外,agent 管理的 session 会同时追加登记到全局账本 `~/.ai-cli-skills/managed-sids.jsonl`,供 context-agent 等跨项目消费者识别「agent 启动」与「用户手动运行 CLI」。可用 `AI_MANAGED_LEDGER` 覆盖账本路径。wrapper 启动的 CLI 子进程还会收到 `AI_CLI_MANAGED_BY=ai-cli-skills` 和 `AI_CLI_MANAGED_SID=<当前已知 SID>`（Codex 新建时 SID 尚未生成,因此为空）。
 
 ## Watchdog:防 codex/claude 卡死
 

@@ -7,6 +7,7 @@
 
 | 编号 | 标题 | 状态 | 决策日期 | 最近更新 | 标签 |
 |---|---|---|---|---|---|
+| [ADR-011](#adr-011) | 全局账本 + Codex prompt 指纹识别 agent-managed session | Accepted | 2026-07-15 | 2026-07-15 | session 识别 / 跨项目账本 |
 | [ADR-010](#adr-010) | 起 session 前跑可选同步钩子(补上 agent 绕过 zshrc 的缺口) | Accepted | 2026-07-14 | 2026-07-14 | 提示词同步 / 进程模型 |
 | [ADR-009](#adr-009) | `-m`/`-e` 收窄成白名单 + 续聊沿用 + claude 强制 1M 变体 | Accepted | 2026-07-14 | 2026-07-14 | 参数设计 / 防呆 |
 | [ADR-008](#adr-008) | claude -p 走 stream-json,过程流式输出跟 codex 一致 | Accepted | 2026-06-23 | 2026-06-23 | UX / 工具一致性 |
@@ -17,6 +18,54 @@
 | [ADR-003](#adr-003) | claude=协作 peer,codex=工具(差异化定位 + safety suffix 差异) | Accepted | 2026-06-22 | 2026-06-23 | 角色定位 / 安全约束 |
 | [ADR-002](#adr-002) | 移除顶层 `agent()` shell 函数,wrapper 是唯一入口 | Accepted | 2026-06-22 | 2026-06-22 | 函数管理 / shell snapshot |
 | [ADR-001](#adr-001) | 统一入口 `agent` 命令,移除 8 个 `ai-*` 老命令 | Accepted | 2026-06-22 | 2026-06-22 | CLI 入口 / UX |
+
+---
+
+<a id="adr-011"></a>
+
+## ADR-011 · 全局账本 + Codex prompt 指纹识别 agent-managed session
+
+- **状态**：Accepted
+- **决策日期**：2026-07-15
+- **最近更新**：2026-07-15
+- **标签**：session 识别 / 跨项目账本
+- **关联代码**：`shell/ai-cli.zsh`（`_ai_ledger_record` + 四个 `_agent_*_new|c` 入口 + `_ai_safety_suffix`）
+- **关联文档**：`README.md`（Session 数据段 + Safety suffix 段）
+- **关联决策**：`refines ADR-003` / `follows ADR-006`
+
+### 背景
+
+下游活动采集需要可靠区分「agent wrapper 启动的 session」和「用户手动运行的 CLI session」。原有 session 信息只落在当前主项目的 `.ai-sessions/`,跨项目消费者必须知道并扫描每个项目根,仍可能漏掉已移动或已清理的工作目录。
+
+Claude 的 SID 由 wrapper 在启动 CLI 前预分配,可以先登记再运行。Codex 新建 session 的 SID 由 CLI 生成,wrapper 只能在 CLI 输出后提取；如果进程在提取和登记前中断,单靠账本会出现窗口期。
+
+### 决策
+
+采用三层信号,其中前两层是主识别链路:
+
+1. wrapper 每次启动或续聊 session 时,向 `~/.ai-cli-skills/managed-sids.jsonl` append 一条记录,包含 UTC 时间、CLI、name、SID、项目 session 目录和 wrapper PID。`AI_MANAGED_LEDGER` 可覆盖默认路径
+2. 仅 Codex prompt 末尾追加 `[managed-by ai-cli-skills]`。这是 Codex 新建时账本尚无 SID 的兜底指纹,下游可在 Codex 原始 session JSONL 中检索它
+3. CLI 子进程 export `AI_CLI_MANAGED_BY=ai-cli-skills` 和 `AI_CLI_MANAGED_SID`（SID 尚未生成时为空）,供 session 内 shell 钩子和未来的嵌套检测使用
+
+账本是 append-only JSONL。每条记录是小于 4096 字节的单行写入,依赖 append 的原子性处理并发,不引入 `flock`。登记失败只做降级,不阻断 CLI 任务。Claude 无需 prompt 指纹,因为新建时 SID 能在 CLI 启动前登记。
+
+### 后果
+
+**正面**
+- 下游获得稳定、跨项目的 agent-managed SID 信号,不再依赖穷举项目目录
+- Codex 即使在 SID 登记前中断,仍可通过 prompt 指纹被识别
+- 环境变量让 session 内部钩子与未来嵌套检测可复用同一身份信号
+
+**负面 / 兼容性**
+- 账本是持续增长的本机文件,后续如果规模成为问题,再加定期裁剪；本次不在启动热路径重写全文件
+- Codex 会看到一行额外指纹,占用少量上下文，但不改变任务语义
+- 续聊会重复记录同一 SID；这是有意的 append-only 行为,下游按 SID 去重即可,同时保留最近活动时间
+
+### 替代方案
+
+- **A. 只用全局账本**：实现最简单。已否决,原因：Codex 新建时 SID 只能在 CLI 完成后提取,中途异常会漏登记
+- **B. 只用 prompt 指纹**：不维护额外文件。已否决,原因：消费者必须遍历和解析 CLI 原始 session 文件,成本更高,且 Claude 没有必要被 prompt 污染
+- **C. 在 Codex / Claude 自有 session 目录塞 marker**：让 marker 与 CLI 原始 session 就近存放。已否决,原因：这依赖外部 CLI 的私有目录布局和写入时序,版本升级容易失效；同时 wrapper 不应向外部工具管理的目录注入自定义文件
 
 ---
 
