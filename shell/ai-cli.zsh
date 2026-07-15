@@ -133,7 +133,22 @@ _ai_safety_suffix() {
 约束:
 - 不要执行 git commit 或 git push。
 - 不要调用 agent 命令起新 session,避免任务套娃。你就是被外层 agent 起来的 session,直接完成任务。
+[managed-by ai-cli-skills]
 EOF
+}
+
+# agent 管理的 session 同时登记到跨项目全局账本,供下游区分 wrapper 与手动 CLI。
+# 单行记录远小于 4096 字节,并发 append 时不需要额外加锁。
+typeset -g _AI_GLOBAL_LEDGER="${AI_MANAGED_LEDGER:-$HOME/.ai-cli-skills/managed-sids.jsonl}"
+
+_ai_ledger_record() {
+  local cli="$1" name="$2" sid="$3" sdir="$4"
+  [[ -z "$sid" ]] && return 0
+  local dir="${_AI_GLOBAL_LEDGER%/*}"
+  [[ -d "$dir" ]] || mkdir -p "$dir" 2>/dev/null || return 0
+  printf '{"ts":"%s","cli":"%s","name":"%s","sid":"%s","sdir":"%s","pid":%d}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$cli" "$name" "$sid" "$sdir" "$$" \
+    >> "$_AI_GLOBAL_LEDGER" 2>/dev/null || true
 }
 
 # ------------------------------------------------------------
@@ -668,6 +683,8 @@ _agent_codex_new() {
 
 $(_ai_safety_suffix)"
 
+  export AI_CLI_MANAGED_BY=ai-cli-skills
+  export AI_CLI_MANAGED_SID=""
   _ai_sync_instructions
   _ai_append_round_header "$sdir/full.log" "new" 1 "$full_prompt"
 
@@ -714,6 +731,7 @@ $(_ai_safety_suffix)"
     return 1
   fi
   printf '%s\n' "$sid" > "$sdir/sid"
+  _ai_ledger_record codex "$name" "$sid" "$sdir"
 
   echo ""
   echo ""
@@ -797,6 +815,9 @@ _agent_codex_c() {
 
 $(_ai_safety_suffix)"
 
+  _ai_ledger_record codex "$name" "$sid" "$sdir"
+  export AI_CLI_MANAGED_BY=ai-cli-skills
+  export AI_CLI_MANAGED_SID="$sid"
   _ai_sync_instructions
   _ai_append_round_header "$sdir/full.log" "resume" "$round" "$full_prompt"
 
@@ -909,6 +930,9 @@ _agent_claude_new() {
 
 $(_ai_claude_nesting_rule)"
 
+  _ai_ledger_record claude "$name" "$sid" "$sdir"
+  export AI_CLI_MANAGED_BY=ai-cli-skills
+  export AI_CLI_MANAGED_SID="$sid"
   _ai_sync_instructions
   _ai_append_round_header "$sdir/full.log" "new" 1 "$full_prompt"
 
@@ -1018,6 +1042,9 @@ _agent_claude_c() {
 
 $(_ai_claude_nesting_rule)"
 
+  _ai_ledger_record claude "$name" "$sid" "$sdir"
+  export AI_CLI_MANAGED_BY=ai-cli-skills
+  export AI_CLI_MANAGED_SID="$sid"
   _ai_sync_instructions
   _ai_append_round_header "$sdir/full.log" "resume" "$round" "$full_prompt"
 
