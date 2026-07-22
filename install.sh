@@ -4,7 +4,6 @@
 set -e
 
 REPO="AmorErwanc/ai-cli-skills"
-RAW="https://raw.githubusercontent.com/$REPO/main"
 
 echo "📦 安装 ai-cli-skills..."
 echo ""
@@ -24,35 +23,48 @@ fi
 command -v codex >/dev/null 2>&1 || echo "⚠  codex CLI 未装:https://github.com/openai/codex"
 command -v claude >/dev/null 2>&1 || echo "⚠  claude CLI 未装:https://docs.claude.com/en/docs/claude-code"
 
-# === 建目录 + 拉文件 ===
+# === 下载并校验单一快照 ===
+# 在这段完成前绝不创建/覆盖任何安装目标,下载或解包失败不会留下半装状态。
+echo "下载完整仓库快照..."
+INSTALL_TMP=$(mktemp -d)
+trap 'rm -rf "$INSTALL_TMP"' EXIT
+ARCHIVE="$INSTALL_TMP/ai-cli-skills.tar.gz"
+curl -fsSL "https://codeload.github.com/$REPO/tar.gz/refs/heads/main" -o "$ARCHIVE"
+tar -xzf "$ARCHIVE" -C "$INSTALL_TMP"
+SNAPSHOT_ROOT="$INSTALL_TMP/ai-cli-skills-main"
+
+REQUIRED_FILES=(
+  shell/ai-cli.zsh
+  bin/agent
+  skills/codex-cli/SKILL.md
+  skills/claude-cli/SKILL.md
+  profiles/README.md
+  profiles/review/profile.conf
+  profiles/review/inject.md
+  profiles/web/profile.conf
+  profiles/web/inject.md
+)
+for required in "${REQUIRED_FILES[@]}"; do
+  if [ ! -f "$SNAPSHOT_ROOT/$required" ]; then
+    echo "❌ 安装快照缺少: $required"
+    exit 1
+  fi
+done
+
+# === 快照完整后才开始覆盖本机 ===
 mkdir -p ~/.config/zsh ~/.local/bin ~/.claude/skills/codex-cli ~/.claude/skills/claude-cli ~/.ai-cli-skills/profiles
 
-echo "下载 shell 函数..."
-curl -fsSL "$RAW/shell/ai-cli.zsh" -o ~/.config/zsh/ai-cli.zsh
-
-echo "下载 agent wrapper..."
-curl -fsSL "$RAW/bin/agent" -o ~/.local/bin/agent
+echo "安装 shell、wrapper 和 skill 文档..."
+cp "$SNAPSHOT_ROOT/shell/ai-cli.zsh" ~/.config/zsh/ai-cli.zsh
+cp "$SNAPSHOT_ROOT/bin/agent" ~/.local/bin/agent
 chmod +x ~/.local/bin/agent
+cp "$SNAPSHOT_ROOT/skills/codex-cli/SKILL.md" ~/.claude/skills/codex-cli/SKILL.md
+cp "$SNAPSHOT_ROOT/skills/claude-cli/SKILL.md" ~/.claude/skills/claude-cli/SKILL.md
 
-echo "下载 skill 文档..."
-curl -fsSL "$RAW/skills/codex-cli/SKILL.md"  -o ~/.claude/skills/codex-cli/SKILL.md
-curl -fsSL "$RAW/skills/claude-cli/SKILL.md" -o ~/.claude/skills/claude-cli/SKILL.md
-
-# === 铺类型档案 ===
-# GitHub raw 无法枚举目录,下载仓库归档后只取 profiles/。
-# 同名类型目录整体替换(允许内置类型升级);其他用户自建目录不动。
+# 同名内置类型目录整体替换;用户自建的其他类型目录不动。
 echo "安装类型档案..."
-PROFILE_TMP=$(mktemp -d)
-trap 'rm -rf "$PROFILE_TMP"' EXIT
-curl -fsSL "https://codeload.github.com/$REPO/tar.gz/refs/heads/main" | tar -xz -C "$PROFILE_TMP"
-PROFILE_SRC="$PROFILE_TMP/ai-cli-skills-main/profiles"
-if [ ! -d "$PROFILE_SRC" ]; then
-  echo "❌ 安装包缺少 profiles/"
-  exit 1
-fi
-if [ -f "$PROFILE_SRC/README.md" ]; then
-  cp "$PROFILE_SRC/README.md" ~/.ai-cli-skills/profiles/README.md
-fi
+PROFILE_SRC="$SNAPSHOT_ROOT/profiles"
+cp "$PROFILE_SRC/README.md" ~/.ai-cli-skills/profiles/README.md
 for profile_dir in "$PROFILE_SRC"/*/; do
   [ -d "$profile_dir" ] || continue
   profile_name=$(basename "$profile_dir")

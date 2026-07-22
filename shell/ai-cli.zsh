@@ -37,6 +37,24 @@ _ai_init() {
   [[ -f "$root/.gitignore" ]] || echo "*" > "$root/.gitignore"
 }
 
+_ai_session_lock_error() {
+  local sdir="$1"
+  echo "❌ session 正在运行中: $(basename "$sdir")"
+  echo "   确认没有运行中任务后可 rm -rf $sdir/.lock 解锁"
+  return 1
+}
+
+_ai_acquire_session_lock() {
+  local sdir="$1"
+  mkdir "$sdir/.lock" 2>/dev/null || { _ai_session_lock_error "$sdir"; return 1; }
+  return 0
+}
+
+_ai_release_session_lock() {
+  local sdir="$1"
+  rmdir "$sdir/.lock" 2>/dev/null || true
+}
+
 _ai_validate_name() {
   local n="$1"
   if [[ -z "$n" ]]; then
@@ -208,6 +226,13 @@ _ai_load_profile() {
   [[ -z "$nesting_rule" ]] && { [[ "$cli" == claude ]] && nesting_rule=on || nesting_rule=off; }
   [[ -z "$watchdog" ]]     && { [[ "$cli" == codex ]] && watchdog=on || watchdog=off; }
   [[ -z "$sandbox" ]]      && sandbox=default
+
+  if [[ "$safety" == on && "$nesting_rule" == on ]]; then
+    echo "❌ 类型档案配置非法: $file"
+    echo "   safety 与 nesting_rule 不能同时为 on"
+    echo "   修复: 两者语义冲突,请二选一改为 off"
+    return 1
+  fi
 
   typeset -g _AI_PROFILE_TYPE="$type"
   typeset -g _AI_PROFILE_DIR="$dir"
@@ -859,6 +884,7 @@ _agent_codex_new() {
   _ai_init
   local sdir="$(_ai_session_root)/.ai-sessions/codex-$name"
   if [[ -d "$sdir" ]]; then
+    [[ -d "$sdir/.lock" ]] && { _ai_session_lock_error "$sdir"; return 1; }
     echo "❌ session 'codex-$name' 已存在"
     echo "   续聊: agent codex c $name \"...\""
     echo "   重置: agent rm codex-$name && agent codex new $name \"...\" \"...\""
@@ -866,6 +892,7 @@ _agent_codex_new() {
   fi
 
   mkdir -p "$sdir"
+  _ai_acquire_session_lock "$sdir" || return 1
   printf '%s\n' "$desc" > "$sdir/desc"
   # 记下本轮 model/effort,续聊时沿用(不传则不落文件 = 一直走 config 默认)
   _ai_save_session_opts "$sdir" "$model" "$effort"
@@ -892,6 +919,7 @@ $(_ai_safety_suffix)"
 
   # 启动 codex 在子 shell 后台(watchdog 监控 sdir/full.log)
   (
+    set -o pipefail
     codex exec ${=skip_flag} "${extra[@]}" -o "$sdir/last.txt" "$full_prompt" </dev/null 2>&1 | tee -a "$sdir/full.log"
   ) &
   local pipeline_pid=$!
@@ -904,7 +932,8 @@ $(_ai_safety_suffix)"
   while ps -p $pipeline_pid >/dev/null 2>&1 && [[ ! -f "$sdir/.killed-by-watchdog" ]]; do
     sleep 0.5
   done
-  local exit_code=0
+  wait $pipeline_pid 2>/dev/null
+  local exit_code=$?
   if [[ -f "$sdir/.killed-by-watchdog" ]]; then
     exit_code=137
     rm -f "$sdir/.killed-by-watchdog"
@@ -920,6 +949,7 @@ $(_ai_safety_suffix)"
   done
 
   if (( exit_code != 0 )); then
+    _ai_release_session_lock "$sdir"
     echo ""
     echo "⚠ codex exit code: $exit_code(可能被 watchdog kill 或其他错误)"
     return $exit_code
@@ -929,11 +959,13 @@ $(_ai_safety_suffix)"
   if [[ -z "$sid" ]]; then
     echo ""
     echo "⚠ 无法抓取 session id,清理残留"
+    _ai_release_session_lock "$sdir"
     rm -rf "$sdir"
     return 1
   fi
   printf '%s\n' "$sid" > "$sdir/sid"
   _ai_ledger_record codex "$name" "$sid" "$sdir"
+  _ai_release_session_lock "$sdir"
 
   echo ""
   echo ""
@@ -986,6 +1018,7 @@ _agent_codex_c() {
     echo "   新起: agent codex new $name \"<desc≥15字>\" \"<prompt>\""
     return 1
   fi
+  _ai_acquire_session_lock "$sdir" || return 1
 
   local sid=$(cat "$sdir/sid")
   local skip_flag=$(_ai_skip_git_flag)
@@ -998,8 +1031,8 @@ _agent_codex_c() {
 
   # 再校验一次"最终生效值":沿用来的值也可能是脏的(session 文件被手改 / 旧版本遗留)。
   # 显式传的值前面已校验过,所以走到这里失败的必然来自 session 记录
-  [[ -n "$model" ]]  && { _ai_validate_codex_model "$model" || { _ai_hint_dirty_session_opt "$sdir" model; return 1; } }
-  [[ -n "$effort" ]] && { _ai_validate_effort "$effort"     || { _ai_hint_dirty_session_opt "$sdir" effort; return 1; } }
+  [[ -n "$model" ]]  && { _ai_validate_codex_model "$model" || { _ai_hint_dirty_session_opt "$sdir" model; _ai_release_session_lock "$sdir"; return 1; } }
+  [[ -n "$effort" ]] && { _ai_validate_effort "$effort"     || { _ai_hint_dirty_session_opt "$sdir" effort; _ai_release_session_lock "$sdir"; return 1; } }
 
   # 全部校验通过,才更新记录(顺序不能反,详见 _ai_save_session_opts 注释)
   _ai_save_session_opts "$sdir" "$model" "$effort"
@@ -1024,6 +1057,7 @@ $(_ai_safety_suffix)"
   _ai_append_round_header "$sdir/full.log" "resume" "$round" "$full_prompt"
 
   (
+    set -o pipefail
     codex exec resume ${=skip_flag} "${extra[@]}" -o "$sdir/last.txt" "$sid" "$full_prompt" </dev/null 2>&1 | tee -a "$sdir/full.log"
   ) &
   local pipeline_pid=$!
@@ -1036,7 +1070,8 @@ $(_ai_safety_suffix)"
   while ps -p $pipeline_pid >/dev/null 2>&1 && [[ ! -f "$sdir/.killed-by-watchdog" ]]; do
     sleep 0.5
   done
-  local exit_code=0
+  wait $pipeline_pid 2>/dev/null
+  local exit_code=$?
   if [[ -f "$sdir/.killed-by-watchdog" ]]; then
     exit_code=137
     rm -f "$sdir/.killed-by-watchdog"
@@ -1052,11 +1087,13 @@ $(_ai_safety_suffix)"
   done
 
   if (( exit_code != 0 )); then
+    _ai_release_session_lock "$sdir"
     echo ""
     echo "⚠ codex exit code: $exit_code"
     return $exit_code
   fi
 
+  _ai_release_session_lock "$sdir"
   echo ""
   echo "✓ codex 'codex-$name' Round $round 完成"
 }
@@ -1105,6 +1142,7 @@ _agent_claude_new() {
   _ai_init
   local sdir="$(_ai_session_root)/.ai-sessions/claude-$name"
   if [[ -d "$sdir" ]]; then
+    [[ -d "$sdir/.lock" ]] && { _ai_session_lock_error "$sdir"; return 1; }
     echo "❌ session 'claude-$name' 已存在"
     echo "   续聊: agent claude c $name \"...\""
     echo "   重置: agent rm claude-$name && agent claude new $name \"...\" \"...\""
@@ -1112,6 +1150,7 @@ _agent_claude_new() {
   fi
 
   mkdir -p "$sdir"
+  _ai_acquire_session_lock "$sdir" || return 1
   local sid=$(uuidgen | tr A-Z a-z)
   printf '%s\n' "$sid" > "$sdir/sid"
   printf '%s\n' "$desc" > "$sdir/desc"
@@ -1139,6 +1178,7 @@ $(_ai_claude_nesting_rule)"
   _ai_append_round_header "$sdir/full.log" "new" 1 "$full_prompt"
 
   (
+    set -o pipefail
     claude -p --output-format stream-json --verbose --session-id "$sid" "${extra[@]}" "$full_prompt" </dev/null 2>&1 \
       | _ai_parse_claude_stream "$sdir/last.txt" \
       | tee -a "$sdir/full.log"
@@ -1154,11 +1194,13 @@ $(_ai_claude_nesting_rule)"
   local exit_code=$?
 
   if (( exit_code != 0 )); then
+    _ai_release_session_lock "$sdir"
     echo ""
     echo "⚠ claude exit code: $exit_code"
     return $exit_code
   fi
 
+  _ai_release_session_lock "$sdir"
   echo ""
   echo ""
   echo "✓ claude session 'claude-$name' 已创建"
@@ -1209,6 +1251,7 @@ _agent_claude_c() {
     echo "   新起: agent claude new $name \"<desc≥15字>\" \"<prompt>\""
     return 1
   fi
+  _ai_acquire_session_lock "$sdir" || return 1
 
   local sid=$(cat "$sdir/sid")
   local round=$(( $(_ai_round_count "$sdir/full.log") + 1 ))
@@ -1222,9 +1265,9 @@ _agent_claude_c() {
   local model_resolved=""
   if [[ -n "$model" ]]; then
     model_resolved=$(_ai_resolve_claude_model "$model") \
-      || { _ai_hint_dirty_session_opt "$sdir" model; return 1; }
+      || { _ai_hint_dirty_session_opt "$sdir" model; _ai_release_session_lock "$sdir"; return 1; }
   fi
-  [[ -n "$effort" ]] && { _ai_validate_effort "$effort" || { _ai_hint_dirty_session_opt "$sdir" effort; return 1; } }
+  [[ -n "$effort" ]] && { _ai_validate_effort "$effort" || { _ai_hint_dirty_session_opt "$sdir" effort; _ai_release_session_lock "$sdir"; return 1; } }
 
   # 全部校验通过,才更新记录——绝不能写在校验前:传错值会先落盘,
   # 之后每轮续聊读回脏值全部失败,session 直接报废
@@ -1251,6 +1294,7 @@ $(_ai_claude_nesting_rule)"
   _ai_append_round_header "$sdir/full.log" "resume" "$round" "$full_prompt"
 
   (
+    set -o pipefail
     claude -p --output-format stream-json --verbose -r "$sid" "${extra[@]}" "$full_prompt" </dev/null 2>&1 \
       | _ai_parse_claude_stream "$sdir/last.txt" \
       | tee -a "$sdir/full.log"
@@ -1265,11 +1309,13 @@ $(_ai_claude_nesting_rule)"
   local exit_code=$?
 
   if (( exit_code != 0 )); then
+    _ai_release_session_lock "$sdir"
     echo ""
     echo "⚠ claude exit code: $exit_code"
     return $exit_code
   fi
 
+  _ai_release_session_lock "$sdir"
   echo ""
   echo "✓ claude 'claude-$name' Round $round 完成"
 }
@@ -1327,6 +1373,7 @@ _agent_typed_new() {
   _ai_init
   local sdir="$(_ai_session_root)/.ai-sessions/$type-$name"
   if [[ -d "$sdir" ]]; then
+    [[ -d "$sdir/.lock" ]] && { _ai_session_lock_error "$sdir"; return 1; }
     echo "❌ session '$type-$name' 已存在"
     echo "   续聊: agent $type c $name \"...\""
     echo "   重置: agent rm $type-$name && agent $type new $name \"...\" \"...\""
@@ -1334,6 +1381,8 @@ _agent_typed_new() {
   fi
 
   mkdir -p "$sdir"
+  _ai_acquire_session_lock "$sdir" || return 1
+  printf '%s\n' "$base_cli" > "$sdir/cli"
   printf '%s\n' "$desc" > "$sdir/desc"
   local sid=""
   if [[ "$base_cli" == claude ]]; then
@@ -1347,6 +1396,9 @@ _agent_typed_new() {
 
   _ai_build_typed_prompt "$prompt" "$inject_file" "$nesting_rule" "$safety"
   local full_prompt="$_AI_TYPED_FULL_PROMPT"
+  if [[ "$base_cli" == codex && "$safety" == off ]]; then
+    full_prompt+=$'\n\n[managed-by ai-cli-skills]'
+  fi
   local -a extra=() sandbox_extra=()
   if [[ "$base_cli" == codex ]]; then
     [[ -n "$model" ]] && extra+=(-m "$model")
@@ -1367,11 +1419,13 @@ _agent_typed_new() {
   local skip_flag=$(_ai_skip_git_flag)
   if [[ "$base_cli" == codex ]]; then
     (
+      set -o pipefail
       codex exec ${=skip_flag} "${sandbox_extra[@]}" "${extra[@]}" -o "$sdir/last.txt" "$full_prompt" </dev/null 2>&1 \
         | tee -a "$sdir/full.log"
     ) &
   else
     (
+      set -o pipefail
       claude -p --output-format stream-json --verbose --session-id "$sid" "${extra[@]}" "$full_prompt" </dev/null 2>&1 \
         | _ai_parse_claude_stream "$sdir/last.txt" \
         | tee -a "$sdir/full.log"
@@ -1396,6 +1450,7 @@ _agent_typed_new() {
     while ps -p $wd_pid >/dev/null 2>&1 && (( wd_wait < 6 )); do sleep 0.5; wd_wait=$((wd_wait + 1)); done
   fi
   if (( exit_code != 0 )); then
+    _ai_release_session_lock "$sdir"
     echo ""
     echo "⚠ $base_cli exit code: $exit_code"
     return $exit_code
@@ -1406,12 +1461,14 @@ _agent_typed_new() {
     if [[ -z "$sid" ]]; then
       echo ""
       echo "⚠ 无法抓取 session id,清理残留"
+      _ai_release_session_lock "$sdir"
       rm -rf "$sdir"
       return 1
     fi
     printf '%s\n' "$sid" > "$sdir/sid"
   fi
   [[ "$base_cli" == codex ]] && _ai_ledger_record "$base_cli" "$name" "$sid" "$sdir"
+  _ai_release_session_lock "$sdir"
 
   echo ""
   echo "✓ 类型 '$type' session '$type-$name' 已创建"
@@ -1469,8 +1526,22 @@ _agent_typed_c() {
     echo "   新起: agent $type new $name \"<desc≥15字>\" \"<prompt>\""
     return 1
   fi
+  _ai_acquire_session_lock "$sdir" || return 1
+  local session_cli=$(cat "$sdir/cli" 2>/dev/null)
+  if [[ -z "$session_cli" ]]; then
+    echo "❌ session '$type-$name' 缺少底座记录: $sdir/cli"
+    echo "   修复: 旧 session 无法安全判断底座,请 agent rm $type-$name 后重建"
+    _ai_release_session_lock "$sdir"
+    return 1
+  fi
+  if [[ "$session_cli" != "$base_cli" ]]; then
+    echo "❌ 该 session 由 $session_cli 底座创建，当前类型已改为 $base_cli；旧 session 无法跨底座续聊，请 agent rm 后重建"
+    echo "   修复: agent rm $type-$name"
+    _ai_release_session_lock "$sdir"
+    return 1
+  fi
   local sid=$(cat "$sdir/sid" 2>/dev/null)
-  [[ -z "$sid" ]] && { echo "❌ session '$type-$name' 缺少 sid: $sdir/sid"; return 1; }
+  [[ -z "$sid" ]] && { echo "❌ session '$type-$name' 缺少 sid: $sdir/sid"; _ai_release_session_lock "$sdir"; return 1; }
   local round=$(( $(_ai_round_count "$sdir/full.log") + 1 ))
 
   [[ -z "$model"  && -f "$sdir/model"  ]] && model=$(<"$sdir/model")
@@ -1480,12 +1551,12 @@ _agent_typed_c() {
 
   local model_resolved=""
   if [[ "$base_cli" == codex ]]; then
-    [[ -n "$model" ]] && { _ai_validate_codex_model "$model" || { _ai_hint_dirty_session_opt "$sdir" model; return 1; } }
+    [[ -n "$model" ]] && { _ai_validate_codex_model "$model" || { _ai_hint_dirty_session_opt "$sdir" model; _ai_release_session_lock "$sdir"; return 1; } }
   elif [[ -n "$model" ]]; then
     model_resolved=$(_ai_resolve_claude_model "$model") \
-      || { _ai_hint_dirty_session_opt "$sdir" model; return 1; }
+      || { _ai_hint_dirty_session_opt "$sdir" model; _ai_release_session_lock "$sdir"; return 1; }
   fi
-  [[ -n "$effort" ]] && { _ai_validate_effort "$effort" || { _ai_hint_dirty_session_opt "$sdir" effort; return 1; } }
+  [[ -n "$effort" ]] && { _ai_validate_effort "$effort" || { _ai_hint_dirty_session_opt "$sdir" effort; _ai_release_session_lock "$sdir"; return 1; } }
 
   # 所有显式、沿用和 profile 值都通过后才落盘。
   _ai_save_session_opts "$sdir" "$model" "$effort"
@@ -1494,6 +1565,9 @@ _agent_typed_c() {
   fi
   _ai_build_typed_prompt "$prompt" "$inject_file" "$nesting_rule" "$safety"
   local full_prompt="$_AI_TYPED_FULL_PROMPT"
+  if [[ "$base_cli" == codex && "$safety" == off ]]; then
+    full_prompt+=$'\n\n[managed-by ai-cli-skills]'
+  fi
 
   local -a extra=() sandbox_extra=()
   if [[ "$base_cli" == codex ]]; then
@@ -1514,11 +1588,13 @@ _agent_typed_c() {
   local skip_flag=$(_ai_skip_git_flag)
   if [[ "$base_cli" == codex ]]; then
     (
+      set -o pipefail
       codex exec "${sandbox_extra[@]}" resume ${=skip_flag} "${extra[@]}" -o "$sdir/last.txt" "$sid" "$full_prompt" </dev/null 2>&1 \
         | tee -a "$sdir/full.log"
     ) &
   else
     (
+      set -o pipefail
       claude -p --output-format stream-json --verbose -r "$sid" "${extra[@]}" "$full_prompt" </dev/null 2>&1 \
         | _ai_parse_claude_stream "$sdir/last.txt" \
         | tee -a "$sdir/full.log"
@@ -1542,11 +1618,13 @@ _agent_typed_c() {
     while ps -p $wd_pid >/dev/null 2>&1 && (( wd_wait < 6 )); do sleep 0.5; wd_wait=$((wd_wait + 1)); done
   fi
   if (( exit_code != 0 )); then
+    _ai_release_session_lock "$sdir"
     echo ""
     echo "⚠ $base_cli exit code: $exit_code"
     return $exit_code
   fi
 
+  _ai_release_session_lock "$sdir"
   echo ""
   echo "✓ 类型 '$type' session '$type-$name' Round $round 完成"
 }
@@ -1563,6 +1641,7 @@ _agent_ls() {
     echo "❌ 过滤参数必须是类型名(当前: '$filter')"
     return 1
   fi
+  [[ "$filter" == peer ]] && filter=claude
 
   local root="$(_ai_session_root)/.ai-sessions"
   if [[ ! -d "$root" ]]; then
@@ -1589,7 +1668,8 @@ _agent_ls() {
       if [[ "$base" == "$candidate"-* && ${#candidate} -gt ${#group} ]]; then group="$candidate"; fi
     done
     [[ -z "$group" ]] && group="${base%%-*}"
-    grouped[$group]+="${grouped[$group]:+$'\n'}$sdir"
+    [[ -n "${grouped[$group]}" ]] && grouped[$group]+=$'\n'
+    grouped[$group]+="$sdir"
     if [[ -z "${seen_groups[$group]}" ]]; then
       seen_groups[$group]=1
       if (( ${known[(Ie)$group]} == 0 )); then unknown_groups+=("$group"); fi
@@ -1611,7 +1691,9 @@ _agent_ls() {
 
     # 不是第一组时加空行分隔
     (( total > 0 )) && echo ""
-    echo "[$target_cli] ${#sessions[@]} session(s)"
+    local display_group="$target_cli"
+    [[ "$target_cli" == claude ]] && display_group="claude(peer)"
+    echo "[$display_group] ${#sessions[@]} session(s)"
     printf "$fmt" "NAME" "DESC" "UPDATED"
     printf -- "%.0s-" {1..86}; echo
 
@@ -1654,6 +1736,7 @@ _agent_rm() {
     return 1
   fi
   local input="$1"
+  [[ "$input" == peer-* ]] && input="claude-${input#peer-}"
   local root="$(_ai_session_root)/.ai-sessions"
   [[ ! -d "$root" ]] && { echo "❌ 当前无 .ai-sessions/"; return 1; }
 
