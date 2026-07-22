@@ -49,13 +49,15 @@ codex/claude 没装也能装本工具,只是不能跑——装完任何一个就
 |---|---|
 | `agent codex  new <name> <desc> (<prompt>\|-f file) [flags]` | 新起 codex session |
 | `agent codex  c   <name> (<prompt>\|-f file) [flags]` | 续聊 codex session |
-| `agent claude new <name> <desc> (<prompt>\|-f file) [flags]` | 新起 claude session |
-| `agent claude c   <name> (<prompt>\|-f file) [flags]` | 续聊 claude session |
-| `agent ls [codex\|claude]` | 列 session(可按 cli 过滤,无过滤时按 cli 分组) |
+| `agent peer new/c ...` | 新起 / 续聊 claude 协作 session（主名；`agent claude` 是等价兼容别名） |
+| `agent <type> new <name> <desc> (<prompt>\|-f file) [flags]` | 按类型档案新起 session |
+| `agent <type> c <name> (<prompt>\|-f file) [flags]` | 续聊类型 session |
+| `agent type ls` / `agent type show <type>` | 列出类型 / 查看完整档案与注入提示词 |
+| `agent ls [type]` | 列 session(可按类型过滤,无过滤时按类型分组) |
 | `agent rm <name>` | 删除某 session(短名歧义时用完整 `codex-<name>` / `claude-<name>`) |
 | `agent incidents [<id>]` | 列出 / 查看 watchdog 抓的 hang 诊断包(详见下文 Watchdog) |
 | `agent update` | 一键更新到最新版(等同重跑 install.sh) |
-| `agent help` / `agent codex help` / `agent claude help` | 顶层用法 / 子命令详细用法 |
+| `agent help` / `agent codex help` / `agent peer help` / `agent <type> help` | 顶层用法 / 子命令详细用法 |
 
 ### 参数
 
@@ -80,7 +82,7 @@ codex/claude 没装也能装本工具,只是不能跑——装完任何一个就
 
 | | `-m` 可选模型 | `-e` 可选思考强度 |
 |---|---|---|
-| **codex** | `gpt-5.6-sol`、`gpt-5.6-luna` | `low` `medium` `high` `xhigh` `max` |
+| **codex** | `gpt-5.6-sol`、`gpt-5.6-luna`、`gpt-5.6-terra` | `low` `medium` `high` `xhigh` `max` |
 | **claude** | `opus`、`sonnet`、`fable` | `low` `medium` `high` `xhigh` `max` |
 
 三条规则:
@@ -95,13 +97,20 @@ agent codex new fix-auth "修登录态失效的边界问题" "<prompt>"
 
 # 换档:显式指定
 agent codex new audit-pay "审计支付并发安全" "<prompt>" -m gpt-5.6-luna -e xhigh
-agent claude new eval-x "评估缓存选型" "<prompt>" -m sonnet -e high
+agent peer new eval-x "评估缓存选型" "<prompt>" -m sonnet -e high
 
 # 续聊自动沿用 luna + xhigh,不用重复传
 agent codex c audit-pay "刚才漏了退款路径,补一下"
 ```
 
-### 协作关系(claude 是 peer,codex 是工具)
+### 类型档案
+
+类型档案位于 `profiles/<type>/`,由 `profile.conf` 和可选 `inject.md` 声明底座、模型档位、权限与固定提示词；字段表、默认值和保留字见 [`profiles/README.md`](profiles/README.md)。调用走高频平铺入口 `agent <type> new/c`,管理走 `agent type ls/show`。
+
+- **review**：只读的高强度方案审查，强制按严重度分级，并要求每条意见给出具体失败场景。
+- **web**：网页采集与 Markdown 资产化，负责图片本地化、覆盖 manifest 和 `~/reference/` 索引维护。
+
+### 协作关系(peer 是主名,claude 是兼容别名,codex 是工具)
 
 这套工具的核心分层:
 
@@ -111,7 +120,7 @@ agent codex c audit-pay "刚才漏了退款路径,补一下"
  ▼
 Claude Code  (主对话,调度方)
  │
- ├──► agent claude new   →  外部 claude (协作 peer)
+ ├──► agent peer new   →  外部 claude (协作 peer)
  │                              ├─ 出方案、跨项目读、追踪进度
  │                              └─ 自己也能起 agent codex new 让 codex 干活 ✓ 允许
  │
@@ -124,15 +133,15 @@ Claude Code  (主对话,调度方)
 
 **codex 当工具**:只负责"动手改代码"。无论是 Claude Code 直接起,还是外部 claude 起,codex 都不会再起新 agent session——所以最多 claude → codex 两层,不会无限套娃。
 
-### Safety suffix(仅 codex,claude 不加)
+### Safety suffix(codex 底座默认开启,peer 不加)
 
-**只有 `agent codex new/c`** 在 prompt 末尾自动追加两条约束和一行管理指纹:
+`agent codex new/c` 及默认未关闭 safety 的 codex 底座类型,会在 prompt 末尾自动追加两条约束和一行管理指纹:
 
 > 1. 不要执行 git commit 或 git push。
 > 2. 不要调用 agent 命令起新 session,避免任务套娃。
 > 3. `[managed-by ai-cli-skills]`
 
-`agent claude new/c` 把 prompt **原样透传**,不追加任何东西——把 claude 当协作者用,完整能力交给它(包括 commit / push / 起 codex 子任务),需要的约束自己写进 prompt。codex 因为是被调工具(默认 `danger-full-access`),保留 safety suffix 防止它误改 git 历史或起新 session 形成套娃嵌套。
+`agent peer new/c` 不追加 safety suffix,但会注入协作 peer 的嵌套规则；它仍拥有完整能力（包括 commit / push / 起 codex 子任务）。codex 因为是被调工具,默认保留 safety suffix 防止误改 git 历史或继续套娃。
 
 ### 一个例子(短 prompt + 长 prompt 两种)
 
@@ -147,15 +156,15 @@ cat > ~/tmp/agent-prompt-foo.md <<'EOF'
 [目标] 评估 redis vs memcached 在缓存层的取舍
 [背景] 我们的系统 $TPS 大约 5000,有 markdown 代码块的反引号 `code` 都安全
 EOF
-agent claude new eval-cache "评估缓存方案选型(redis vs memcached)" \
+agent peer new eval-cache "评估缓存方案选型(redis vs memcached)" \
   -f ~/tmp/agent-prompt-foo.md -C ~/project/myapp
 
 # 续聊
 agent codex c add-cache "刚才加的缓存没处理 cache miss 时的 thundering herd,加个 SETNX 锁。"
 
-# 按 cli 看 session
-agent ls            # 分组显示 [codex] 和 [claude]
-agent ls codex      # 只看 codex
+# 按类型看 session
+agent ls            # 分组显示 codex / claude / review / web 等现有类型
+agent ls review     # 只看 review
 
 # 删
 agent rm add-cache
@@ -179,16 +188,16 @@ export AI_SYNC_HOOK=""                            # 关掉
 ## Session 数据存哪
 
 ```
-<主项目根>/.ai-sessions/<cli>-<name>/
+<主项目根>/.ai-sessions/<type>-<name>/
   sid          # session UUID
   desc         # 描述
-  model        # 起 session 时指定的模型(没指定就没这个文件 = 走 config)
-  effort       # 起 session 时指定的思考强度(同上)
+  model        # session 最终固定的模型(显式 flag 或 profile 提供)
+  effort       # session 最终固定的思考强度(同上)
   last.txt     # 最新一轮的最终回答(覆盖式)
   full.log     # 完整流式输出累加(看过程、工具调用)
 ```
 
-`model` / `effort` 是续聊沿用的依据——没有这两个文件就说明该 session 一直走本机 config 默认。
+`model` / `effort` 是续聊沿用的依据——没有记录时再读 profile；profile 也没定死才走本机 config。
 
 **永远落在主项目根**——通过 `git rev-parse --git-common-dir` 定位,worktree 里跑也回到主项目,worktree 删除不丢 session。
 
@@ -235,7 +244,8 @@ export AI_WATCHDOG_KILL_CHECKS=10   # 多少次无更新 → kill
 
 | 文件 | 干嘛 |
 |---|---|
-| `shell/ai-cli.zsh` | shell 函数实现(`agent` dispatcher + 4 个核心命令 + 4 个管理命令) |
+| `shell/ai-cli.zsh` | shell 函数实现（内置入口、通用类型执行、profile 校验和 session 管理） |
+| `profiles/` | 类型档案；当前内置 `review` / `web`，格式见 `profiles/README.md` |
 | `bin/agent` | 单一入口 wrapper,装到 `~/.local/bin/agent`,让非交互 shell(Claude Code Bash tool / cron / systemd)也能直接用 |
 | `skills/codex-cli/SKILL.md` | 教 Claude Code 怎么调 codex CLI(开发型任务、worktree 流程、任务调度) |
 | `skills/claude-cli/SKILL.md` | 教 Claude Code 怎么调 claude CLI(协作 peer 定位、跨项目协调、套娃姿势) |
@@ -248,15 +258,15 @@ export AI_WATCHDOG_KILL_CHECKS=10   # 多少次无更新 → kill
 curl -fsSL https://raw.githubusercontent.com/AmorErwanc/ai-cli-skills/main/uninstall.sh | bash
 ```
 
-只清安装的文件 + zshrc 里的 source 行;项目里的 `.ai-sessions/` 数据**保留**,需要清理自行 `rm -rf`。
+清理安装文件、内置 profile 与 zshrc source 行；用户自建 profile 目录和项目里的 `.ai-sessions/` 数据**保留**。
 
 ## 设计要点
 
-- **默认零配置**:model / effort / 权限全走用户已有的 `~/.codex/config.toml` 和 `~/.claude/settings.json`;`-m` / `-e` 只在明确要换档时才传,且只开放收窄过的白名单
+- **裸类型默认零配置**:codex / peer 默认走用户已有 config；声明式类型可固定 model / effort / 权限，显式 flag 仍优先
 - **session 集中管理**:主项目根的 `.ai-sessions/`,跨 worktree 共享
 - **name 撞车立即报错**:绝不静默接错 session(防止旧上下文污染新任务)
 - **必带 desc**:≥ 15 字,半年后回来还看得懂自己起的 session 在干啥
-- **safety 约束自动注入**:每条 prompt 末尾加"不要 git commit/push",防 AI 乱提交
+- **safety 约束按底座默认注入**:codex 底座默认追加"不要 git commit/push",profile 可显式关闭
 - **Claude Code skill 集成**:让 agent 学一遍就会用,不用手把手教
 
 详细规则见 `skills/codex-cli/SKILL.md` 和 `skills/claude-cli/SKILL.md`。

@@ -10,7 +10,7 @@ echo "📦 安装 ai-cli-skills..."
 echo ""
 
 # === 硬依赖检查 ===
-for cmd in zsh uuidgen git curl; do
+for cmd in zsh uuidgen git curl tar; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "❌ 缺少依赖:$cmd";  exit 1; }
 done
 
@@ -25,7 +25,7 @@ command -v codex >/dev/null 2>&1 || echo "⚠  codex CLI 未装:https://github.c
 command -v claude >/dev/null 2>&1 || echo "⚠  claude CLI 未装:https://docs.claude.com/en/docs/claude-code"
 
 # === 建目录 + 拉文件 ===
-mkdir -p ~/.config/zsh ~/.local/bin ~/.claude/skills/codex-cli ~/.claude/skills/claude-cli
+mkdir -p ~/.config/zsh ~/.local/bin ~/.claude/skills/codex-cli ~/.claude/skills/claude-cli ~/.ai-cli-skills/profiles
 
 echo "下载 shell 函数..."
 curl -fsSL "$RAW/shell/ai-cli.zsh" -o ~/.config/zsh/ai-cli.zsh
@@ -37,6 +37,28 @@ chmod +x ~/.local/bin/agent
 echo "下载 skill 文档..."
 curl -fsSL "$RAW/skills/codex-cli/SKILL.md"  -o ~/.claude/skills/codex-cli/SKILL.md
 curl -fsSL "$RAW/skills/claude-cli/SKILL.md" -o ~/.claude/skills/claude-cli/SKILL.md
+
+# === 铺类型档案 ===
+# GitHub raw 无法枚举目录,下载仓库归档后只取 profiles/。
+# 同名类型目录整体替换(允许内置类型升级);其他用户自建目录不动。
+echo "安装类型档案..."
+PROFILE_TMP=$(mktemp -d)
+trap 'rm -rf "$PROFILE_TMP"' EXIT
+curl -fsSL "https://codeload.github.com/$REPO/tar.gz/refs/heads/main" | tar -xz -C "$PROFILE_TMP"
+PROFILE_SRC="$PROFILE_TMP/ai-cli-skills-main/profiles"
+if [ ! -d "$PROFILE_SRC" ]; then
+  echo "❌ 安装包缺少 profiles/"
+  exit 1
+fi
+if [ -f "$PROFILE_SRC/README.md" ]; then
+  cp "$PROFILE_SRC/README.md" ~/.ai-cli-skills/profiles/README.md
+fi
+for profile_dir in "$PROFILE_SRC"/*/; do
+  [ -d "$profile_dir" ] || continue
+  profile_name=$(basename "$profile_dir")
+  rm -rf "$HOME/.ai-cli-skills/profiles/$profile_name"
+  cp -R "$profile_dir" "$HOME/.ai-cli-skills/profiles/$profile_name"
+done
 
 # === 加 source 行到 zshrc(幂等) ===
 ZSHRC="${ZDOTDIR:-$HOME}/.zshrc"

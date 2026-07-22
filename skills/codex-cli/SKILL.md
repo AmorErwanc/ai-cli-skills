@@ -91,7 +91,7 @@ shell 函数**只对 codex** 在 prompt 末尾自动追加:
 
 第二条防 codex 在 `danger-full-access` 下看到 PATH 里有 `agent` 就主动调,搞出"agent 起 codex,codex 又起 agent..."的无限嵌套。**这是 codex 的硬规则,即使它是被外部 claude 起的(claude 是协作 peer,允许它起 codex 子任务)也一样——claude → codex 这一层之后就到底,codex 不会再起新 session**。
 
-> 对照:`agent claude new/c` **不追加任何 safety suffix**,prompt 原样透传。claude 当协作者用,完整能力放开;约束自己写进 prompt。详见 `claude-cli` skill。
+> 对照:`agent peer new/c`（`agent claude` 兼容别名）**不追加 safety suffix**，只注入 peer 嵌套规则。claude 当协作者用，完整能力放开；约束自己写进 prompt。详见 `claude-cli` skill。
 
 ⚠️ codex 默认 `sandbox_mode = danger-full-access`——它**真的会改文件、跑命令**。让它"只分析不改文件"的任务务必显式写"不要修改任何文件"。
 
@@ -345,7 +345,7 @@ agent incidents <关键字>         # 看某次详情
 
 | flag | 可选值 | 说明 |
 |---|---|---|
-| `-m` | `gpt-5.6-sol`、`gpt-5.6-luna` | 不传 = config 默认(gpt-5.6-sol) |
+| `-m` | `gpt-5.6-sol`、`gpt-5.6-luna`、`gpt-5.6-terra` | 不传 = config 默认(gpt-5.6-sol) |
 | `-e` | `low` `medium` `high` `xhigh` `max` | 不传 = config 默认(medium) |
 
 codex 本身还认识 `none`/`minimal`/`ultra` 三档 effort 和十几个 gpt-5.x 模型,但 wrapper **刻意只开放上面这些**。传白名单外的值会被本地拦下并列出可选值,不会打到服务端。用户要用别的值 → 让他改 `~/.codex/config.toml`。
@@ -365,4 +365,21 @@ agent codex c audit-x "刚才漏了退款路径,补一下"
 
 # 续聊想临时提档
 agent codex c audit-x "<prompt>" -e max
+```
+
+## 类型档案（review / web 等）
+
+声明式类型使用与 codex 相同的平铺入口；先用 `agent type ls` 查看当前可用类型和默认档位：
+
+```bash
+agent <type> new <name> "<desc>" "<prompt>" [-m M] [-e E] [-C dir]
+agent <type> c <name> "<prompt>" [-m M] [-e E] [-C dir]
+```
+
+- `review`：方案审查，固定只读沙箱 + max；只产出带具体失败场景的分级审查意见。
+- `web`：网页采集，把正文、图片和 manifest 资产化到指定目录；未指定时落 `~/reference/`。
+
+```bash
+agent review new review-cache "审查缓存改造方案的风险和失败场景" -f ~/tmp/cache-plan.md -C ~/project/myrepo
+agent web new collect-docs "采集官方文档并整理成本地 Markdown 参考资料" "抓取 https://example.com/docs 全模块" -C ~/reference
 ```

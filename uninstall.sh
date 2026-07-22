@@ -10,6 +10,25 @@ rm -f ~/.local/bin/agent
 rm -f ~/.local/bin/{ai-codex,ai-codex-c,ai-claude,ai-claude-c,ai-sessions,ai-rm,ai-incidents,ai-update,ai-cli-wrapper}
 rm -rf ~/.claude/skills/codex-cli ~/.claude/skills/claude-cli
 
+# 只清本项目随安装铺设的内置类型;用户自建 profile 目录绝不动。
+PROFILES_ROOT="$HOME/.ai-cli-skills/profiles"
+rm -rf "$PROFILES_ROOT/review" "$PROFILES_ROOT/web"
+rm -f "$PROFILES_ROOT/README.md"
+if [ -d "$PROFILES_ROOT" ]; then
+  KEPT_PROFILES=()
+  for profile_dir in "$PROFILES_ROOT"/*/; do
+    [ -d "$profile_dir" ] || continue
+    KEPT_PROFILES+=("$(basename "$profile_dir")")
+  done
+  if [ "${#KEPT_PROFILES[@]}" -gt 0 ]; then
+    echo "✓ 已清理内置 profile: review / web / README.md"
+    echo "  保留用户自建 profile: ${KEPT_PROFILES[*]}"
+  else
+    rmdir "$PROFILES_ROOT" 2>/dev/null || true
+    echo "✓ 已清理内置 profile: review / web / README.md（无用户自建类型）"
+  fi
+fi
+
 ZSHRC="${ZDOTDIR:-$HOME}/.zshrc"
 if [ -f "$ZSHRC" ]; then
   # 只删 ai-cli-skills 相关注释 + source 行(PATH 行太通用,可能跟用户自己加的撞,留着)

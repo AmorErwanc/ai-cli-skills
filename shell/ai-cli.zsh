@@ -65,6 +65,208 @@ _ai_validate_desc() {
   return 0
 }
 
+# 类型档案目录可用环境变量覆盖,测试时不碰用户本机目录。
+_ai_profiles_dir() {
+  echo "${AI_PROFILES_DIR:-$HOME/.ai-cli-skills/profiles}"
+}
+
+_ai_validate_profile_type_name() {
+  local type="$1" file="$2"
+  if ! [[ "$type" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    echo "❌ 类型名 '$type' 非法($file)"
+    echo "   修复: 目录名必须是 kebab-case(小写字母/数字/连字符)"
+    return 1
+  fi
+  case "$type" in
+    ls|rm|incidents|update|help|type|new|c|codex|claude|peer)
+      echo "❌ 类型名 '$type' 是保留字($file)"
+      echo "   修复: 请改用其他目录名;保留字: ls / rm / incidents / update / help / type / new / c / codex / claude / peer"
+      return 1
+      ;;
+  esac
+  return 0
+}
+
+_ai_profile_error() {
+  local file="$1" field="$2" value="$3" choices="$4"
+  echo "❌ 类型档案配置非法: $file"
+  echo "   字段 '$field' 的值 '$value' 不支持"
+  echo "   可选: $choices"
+  return 1
+}
+
+# 安全解析 profile.conf:只读白名单 key=value,不 source、不 eval。
+# 成功后把最终默认值写入 _AI_PROFILE_* 全局变量,供同一调用链后续使用。
+_ai_load_profile() {
+  local type="$1"
+  local root="$(_ai_profiles_dir)"
+  local dir="$root/$type"
+  local file="$dir/profile.conf"
+
+  _ai_validate_profile_type_name "$type" "$file" || return 1
+  if [[ ! -f "$file" ]]; then
+    echo "❌ 类型 '$type' 不存在: 缺少 $file"
+    return 1
+  fi
+
+  local cli="" model="" effort="" safety="" nesting_rule="" watchdog="" sandbox=""
+  local line key value
+  local -A seen=()
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    # 只允许整行注释;键和值两侧空白会被去掉。
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    if [[ "$line" != *=* ]]; then
+      echo "❌ 类型档案配置非法: $file"
+      echo "   无法解析: $line"
+      echo "   修复: 每行使用 key=value,只允许空行和以 # 开头的注释"
+      return 1
+    fi
+    key="${line%%=*}"
+    value="${line#*=}"
+    key="${key#"${key%%[![:space:]]*}"}"
+    key="${key%"${key##*[![:space:]]}"}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+
+    case "$key" in
+      cli|model|effort|safety|nesting_rule|watchdog|sandbox) ;;
+      *)
+        echo "❌ 类型档案配置非法: $file"
+        echo "   未知字段: '$key'"
+        echo "   可选字段: cli / model / effort / safety / nesting_rule / watchdog / sandbox"
+        return 1
+        ;;
+    esac
+    if [[ -n "${seen[$key]}" ]]; then
+      echo "❌ 类型档案配置非法: $file"
+      echo "   字段 '$key' 重复出现"
+      echo "   修复: 每个字段只保留一行"
+      return 1
+    fi
+    seen[$key]=1
+    case "$key" in
+      cli) cli="$value" ;;
+      model) model="$value" ;;
+      effort) effort="$value" ;;
+      safety) safety="$value" ;;
+      nesting_rule) nesting_rule="$value" ;;
+      watchdog) watchdog="$value" ;;
+      sandbox) sandbox="$value" ;;
+    esac
+  done < "$file"
+
+  if [[ -z "$cli" ]]; then
+    echo "❌ 类型档案配置非法: $file"
+    echo "   缺少必填字段: cli"
+    echo "   可选: cli=codex 或 cli=claude"
+    return 1
+  fi
+  case "$cli" in
+    codex|claude) ;;
+    *) _ai_profile_error "$file" cli "$cli" "codex / claude"; return 1 ;;
+  esac
+
+  if [[ -n "$model" ]]; then
+    if [[ "$cli" == codex ]]; then
+      _ai_validate_codex_model "$model" >/dev/null || {
+        _ai_profile_error "$file" model "$model" "gpt-5.6-sol / gpt-5.6-luna / gpt-5.6-terra"; return 1
+      }
+    else
+      _ai_resolve_claude_model "$model" >/dev/null 2>&1 || {
+        _ai_profile_error "$file" model "$model" "opus / sonnet / fable"; return 1
+      }
+    fi
+  fi
+  if [[ -n "$effort" ]]; then
+    _ai_validate_effort "$effort" >/dev/null || {
+      _ai_profile_error "$file" effort "$effort" "low / medium / high / xhigh / max"
+      return 1
+    }
+  fi
+  local field
+  for field in safety nesting_rule watchdog; do
+    value="${(P)field}"
+    case "$value" in
+      ""|on|off) ;;
+      *) _ai_profile_error "$file" "$field" "$value" "on / off"; return 1 ;;
+    esac
+  done
+  case "$sandbox" in
+    ""|readonly|default) ;;
+    *) _ai_profile_error "$file" sandbox "$sandbox" "readonly / default"; return 1 ;;
+  esac
+  if [[ "$cli" == claude && "$sandbox" == readonly ]]; then
+    echo "❌ 类型档案配置非法: $file"
+    echo "   字段 'sandbox=readonly' 仅 codex 底座支持"
+    echo "   修复: claude 类型请删除 sandbox 或改为 sandbox=default"
+    return 1
+  fi
+
+  [[ -z "$safety" ]]      && { [[ "$cli" == codex ]] && safety=on || safety=off; }
+  [[ -z "$nesting_rule" ]] && { [[ "$cli" == claude ]] && nesting_rule=on || nesting_rule=off; }
+  [[ -z "$watchdog" ]]     && { [[ "$cli" == codex ]] && watchdog=on || watchdog=off; }
+  [[ -z "$sandbox" ]]      && sandbox=default
+
+  typeset -g _AI_PROFILE_TYPE="$type"
+  typeset -g _AI_PROFILE_DIR="$dir"
+  typeset -g _AI_PROFILE_FILE="$file"
+  typeset -g _AI_PROFILE_INJECT="$dir/inject.md"
+  typeset -g _AI_PROFILE_CLI="$cli"
+  typeset -g _AI_PROFILE_MODEL="$model"
+  typeset -g _AI_PROFILE_EFFORT="$effort"
+  typeset -g _AI_PROFILE_SAFETY="$safety"
+  typeset -g _AI_PROFILE_NESTING_RULE="$nesting_rule"
+  typeset -g _AI_PROFILE_WATCHDOG="$watchdog"
+  typeset -g _AI_PROFILE_SANDBOX="$sandbox"
+  return 0
+}
+
+_ai_profile_names() {
+  local root="$(_ai_profiles_dir)"
+  local -a names=()
+  local dir
+  if [[ -d "$root" ]]; then
+    for dir in "$root"/*(N/); do
+      [[ -f "$dir/profile.conf" ]] && names+=("$(basename "$dir")")
+    done
+  fi
+  (( ${#names[@]} > 0 )) && printf '%s\n' "${(on)names[@]}"
+}
+
+_ai_valid_profile_names() {
+  local type
+  for type in ${(@f)$(_ai_profile_names)}; do
+    ( _ai_load_profile "$type" >/dev/null 2>&1 ) && echo "$type"
+  done
+}
+
+_ai_available_types_text() {
+  local -a names=(codex peer claude)
+  local type
+  for type in ${(@f)$(_ai_valid_profile_names)}; do names+=("$type"); done
+  echo "${(j: / :)names}"
+}
+
+_ai_build_typed_prompt() {
+  local prompt="$1" inject_file="$2" nesting_rule="$3" safety="$4"
+  local result="$prompt" section=""
+  if [[ -f "$inject_file" ]]; then
+    section="$(<"$inject_file")"
+    [[ -n "$section" ]] && result+=$'\n\n'"$section"
+  fi
+  if [[ "$nesting_rule" == on ]]; then
+    section="$(_ai_claude_nesting_rule)"
+    [[ -n "$section" ]] && result+=$'\n\n'"$section"
+  fi
+  if [[ "$safety" == on ]]; then
+    section="$(_ai_safety_suffix)"
+    [[ -n "$section" ]] && result+=$'\n\n'"$section"
+  fi
+  typeset -g _AI_TYPED_FULL_PROMPT="$result"
+}
+
 _ai_skip_git_flag() {
   if git rev-parse --git-dir &>/dev/null; then
     echo ""
@@ -204,10 +406,10 @@ _ai_validate_effort() {
 _ai_validate_codex_model() {
   local m="$1"
   case "$m" in
-    gpt-5.6-sol|gpt-5.6-luna) return 0 ;;
+    gpt-5.6-sol|gpt-5.6-luna|gpt-5.6-terra) return 0 ;;
     *)
       echo "❌ -m 不支持 '$m'"
-      echo "   codex 可选: gpt-5.6-sol / gpt-5.6-luna"
+      echo "   codex 可选: gpt-5.6-sol / gpt-5.6-luna / gpt-5.6-terra"
       return 1
       ;;
   esac
@@ -1072,6 +1274,283 @@ $(_ai_claude_nesting_rule)"
   echo "✓ claude 'claude-$name' Round $round 完成"
 }
 
+# 声明式类型共用执行入口。内置 codex/claude 仍走原函数,保证历史行为不变。
+_agent_typed_new() {
+  [[ -z "${functions[_ai_validate_name]}" ]] && source "${_AI_CLI_SELF:-$HOME/.config/zsh/ai-cli.zsh}" 2>/dev/null
+  local type="$1"; shift
+  _ai_load_profile "$type" || return 1
+  local base_cli="$_AI_PROFILE_CLI" profile_model="$_AI_PROFILE_MODEL" profile_effort="$_AI_PROFILE_EFFORT"
+  local safety="$_AI_PROFILE_SAFETY" nesting_rule="$_AI_PROFILE_NESTING_RULE"
+  local watchdog="$_AI_PROFILE_WATCHDOG" sandbox="$_AI_PROFILE_SANDBOX" inject_file="$_AI_PROFILE_INJECT"
+
+  local name="$1" desc="$2"
+  shift 2 2>/dev/null
+  local prompt=""
+  if [[ $# -gt 0 && "$1" != -* ]]; then prompt="$1"; shift; fi
+  local model="" effort="" cwd="" prompt_file=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -m) _ai_require_arg -m "$2" || return 1; model="$2"; shift 2 ;;
+      -e) _ai_require_arg -e "$2" || return 1; effort="$2"; shift 2 ;;
+      -C|--cwd) _ai_require_arg -C "$2" || return 1; cwd="$2"; shift 2 ;;
+      -f) _ai_require_arg -f "$2" || return 1; prompt_file="$2"; shift 2 ;;
+      *) echo "❌ 未知参数: $1"; return 1 ;;
+    esac
+  done
+
+  if [[ -n "$prompt" && -n "$prompt_file" ]]; then
+    echo "❌ 不能同时传 <prompt> 位置参数和 -f file,只用一种"
+    return 1
+  fi
+  if [[ -n "$prompt_file" ]]; then
+    _ai_read_prompt_file "$prompt_file" || return 1
+    prompt="$_AI_RPF_CONTENT"
+    prompt_file="$_AI_RPF_ABS"
+  fi
+
+  _ai_validate_name "$name" || return 1
+  _ai_validate_desc "$desc" || return 1
+  [[ -z "$prompt" ]] && { echo "❌ prompt 不能为空(用 \"<prompt>\" 或 -f <file>)"; return 1; }
+
+  # 显式参数优先;没有时使用 profile 定死值。两者都会在所有校验通过后落 session。
+  [[ -z "$model" ]] && model="$profile_model"
+  [[ -z "$effort" ]] && effort="$profile_effort"
+  local model_resolved=""
+  if [[ "$base_cli" == codex ]]; then
+    [[ -n "$model" ]] && { _ai_validate_codex_model "$model" || return 1; }
+  elif [[ -n "$model" ]]; then
+    model_resolved=$(_ai_resolve_claude_model "$model") || return 1
+  fi
+  [[ -n "$effort" ]] && { _ai_validate_effort "$effort" || return 1; }
+  _ai_apply_cwd "$cwd" || return 1
+
+  _ai_init
+  local sdir="$(_ai_session_root)/.ai-sessions/$type-$name"
+  if [[ -d "$sdir" ]]; then
+    echo "❌ session '$type-$name' 已存在"
+    echo "   续聊: agent $type c $name \"...\""
+    echo "   重置: agent rm $type-$name && agent $type new $name \"...\" \"...\""
+    return 1
+  fi
+
+  mkdir -p "$sdir"
+  printf '%s\n' "$desc" > "$sdir/desc"
+  local sid=""
+  if [[ "$base_cli" == claude ]]; then
+    sid=$(uuidgen | tr A-Z a-z)
+    printf '%s\n' "$sid" > "$sdir/sid"
+  fi
+  _ai_save_session_opts "$sdir" "$model" "$effort"
+  if [[ -n "$prompt_file" ]]; then
+    cp "$prompt_file" "$sdir/prompt.md" || echo "⚠ archive prompt 文件失败,session 仍会继续(详见 stderr)" >&2
+  fi
+
+  _ai_build_typed_prompt "$prompt" "$inject_file" "$nesting_rule" "$safety"
+  local full_prompt="$_AI_TYPED_FULL_PROMPT"
+  local -a extra=() sandbox_extra=()
+  if [[ "$base_cli" == codex ]]; then
+    [[ -n "$model" ]] && extra+=(-m "$model")
+    [[ -n "$effort" ]] && extra+=(-c "model_reasoning_effort=$effort")
+    [[ "$sandbox" == readonly ]] && sandbox_extra+=(--sandbox read-only)
+  else
+    [[ -n "$model_resolved" ]] && extra+=(--model "$model_resolved")
+    [[ -n "$effort" ]] && extra+=(--effort "$effort")
+  fi
+
+  export AI_CLI_MANAGED_BY=ai-cli-skills
+  export AI_CLI_MANAGED_SID="$sid"
+  # claude 的 sid 启动前已知,沿用内置链路先登记;codex 要等输出里抓到 sid。
+  [[ "$base_cli" == claude ]] && _ai_ledger_record "$base_cli" "$name" "$sid" "$sdir"
+  _ai_sync_instructions
+  _ai_append_round_header "$sdir/full.log" "new" 1 "$full_prompt"
+
+  local skip_flag=$(_ai_skip_git_flag)
+  if [[ "$base_cli" == codex ]]; then
+    (
+      codex exec ${=skip_flag} "${sandbox_extra[@]}" "${extra[@]}" -o "$sdir/last.txt" "$full_prompt" </dev/null 2>&1 \
+        | tee -a "$sdir/full.log"
+    ) &
+  else
+    (
+      claude -p --output-format stream-json --verbose --session-id "$sid" "${extra[@]}" "$full_prompt" </dev/null 2>&1 \
+        | _ai_parse_claude_stream "$sdir/last.txt" \
+        | tee -a "$sdir/full.log"
+    ) &
+  fi
+  local pipeline_pid=$! wd_pid=""
+  if [[ "$watchdog" == on ]]; then
+    _ai_watchdog $pipeline_pid "$sdir" "$base_cli" "$name" &
+    wd_pid=$!
+  fi
+
+  while ps -p $pipeline_pid >/dev/null 2>&1 && [[ ! -f "$sdir/.killed-by-watchdog" ]]; do sleep 0.5; done
+  wait $pipeline_pid 2>/dev/null
+  local exit_code=$?
+  if [[ -f "$sdir/.killed-by-watchdog" ]]; then
+    exit_code=137
+    rm -f "$sdir/.killed-by-watchdog"
+  fi
+  if [[ -n "$wd_pid" ]]; then
+    kill -KILL $wd_pid 2>/dev/null
+    local wd_wait=0
+    while ps -p $wd_pid >/dev/null 2>&1 && (( wd_wait < 6 )); do sleep 0.5; wd_wait=$((wd_wait + 1)); done
+  fi
+  if (( exit_code != 0 )); then
+    echo ""
+    echo "⚠ $base_cli exit code: $exit_code"
+    return $exit_code
+  fi
+
+  if [[ "$base_cli" == codex ]]; then
+    sid=$(grep -oE 'session id: [0-9a-f-]+' "$sdir/full.log" | head -1 | awk '{print $3}')
+    if [[ -z "$sid" ]]; then
+      echo ""
+      echo "⚠ 无法抓取 session id,清理残留"
+      rm -rf "$sdir"
+      return 1
+    fi
+    printf '%s\n' "$sid" > "$sdir/sid"
+  fi
+  [[ "$base_cli" == codex ]] && _ai_ledger_record "$base_cli" "$name" "$sid" "$sdir"
+
+  echo ""
+  echo "✓ 类型 '$type' session '$type-$name' 已创建"
+  echo "  底座: $base_cli"
+  echo "  sid: $sid"
+}
+
+_agent_typed_c() {
+  [[ -z "${functions[_ai_validate_name]}" ]] && source "${_AI_CLI_SELF:-$HOME/.config/zsh/ai-cli.zsh}" 2>/dev/null
+  local type="$1"; shift
+  _ai_load_profile "$type" || return 1
+  local base_cli="$_AI_PROFILE_CLI" profile_model="$_AI_PROFILE_MODEL" profile_effort="$_AI_PROFILE_EFFORT"
+  local safety="$_AI_PROFILE_SAFETY" nesting_rule="$_AI_PROFILE_NESTING_RULE"
+  local watchdog="$_AI_PROFILE_WATCHDOG" sandbox="$_AI_PROFILE_SANDBOX" inject_file="$_AI_PROFILE_INJECT"
+
+  local name="$1"; shift 1 2>/dev/null
+  local prompt=""
+  if [[ $# -gt 0 && "$1" != -* ]]; then prompt="$1"; shift; fi
+  local model="" effort="" cwd="" prompt_file=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -m) _ai_require_arg -m "$2" || return 1; model="$2"; shift 2 ;;
+      -e) _ai_require_arg -e "$2" || return 1; effort="$2"; shift 2 ;;
+      -C|--cwd) _ai_require_arg -C "$2" || return 1; cwd="$2"; shift 2 ;;
+      -f) _ai_require_arg -f "$2" || return 1; prompt_file="$2"; shift 2 ;;
+      *) echo "❌ 未知参数: $1"; return 1 ;;
+    esac
+  done
+  if [[ -n "$prompt" && -n "$prompt_file" ]]; then
+    echo "❌ 不能同时传 <prompt> 位置参数和 -f file,只用一种"
+    return 1
+  fi
+  if [[ -n "$prompt_file" ]]; then
+    _ai_read_prompt_file "$prompt_file" || return 1
+    prompt="$_AI_RPF_CONTENT"
+    prompt_file="$_AI_RPF_ABS"
+  fi
+
+  _ai_validate_name "$name" || return 1
+  [[ -z "$prompt" ]] && { echo "❌ prompt 不能为空(用法: <name> \"<prompt>\" [-C dir] 或 <name> -f <file>)"; return 1; }
+  # 显式值先做早校验;沿用值会在读取后再校验一次。
+  if [[ -n "$model" ]]; then
+    if [[ "$base_cli" == codex ]]; then
+      _ai_validate_codex_model "$model" || return 1
+    else
+      _ai_resolve_claude_model "$model" >/dev/null || return 1
+    fi
+  fi
+  [[ -n "$effort" ]] && { _ai_validate_effort "$effort" || return 1; }
+  _ai_apply_cwd "$cwd" || return 1
+
+  local sdir="$(_ai_session_root)/.ai-sessions/$type-$name"
+  if [[ ! -d "$sdir" ]]; then
+    echo "❌ session '$type-$name' 不存在"
+    echo "   新起: agent $type new $name \"<desc≥15字>\" \"<prompt>\""
+    return 1
+  fi
+  local sid=$(cat "$sdir/sid" 2>/dev/null)
+  [[ -z "$sid" ]] && { echo "❌ session '$type-$name' 缺少 sid: $sdir/sid"; return 1; }
+  local round=$(( $(_ai_round_count "$sdir/full.log") + 1 ))
+
+  [[ -z "$model"  && -f "$sdir/model"  ]] && model=$(<"$sdir/model")
+  [[ -z "$effort" && -f "$sdir/effort" ]] && effort=$(<"$sdir/effort")
+  [[ -z "$model" ]] && model="$profile_model"
+  [[ -z "$effort" ]] && effort="$profile_effort"
+
+  local model_resolved=""
+  if [[ "$base_cli" == codex ]]; then
+    [[ -n "$model" ]] && { _ai_validate_codex_model "$model" || { _ai_hint_dirty_session_opt "$sdir" model; return 1; } }
+  elif [[ -n "$model" ]]; then
+    model_resolved=$(_ai_resolve_claude_model "$model") \
+      || { _ai_hint_dirty_session_opt "$sdir" model; return 1; }
+  fi
+  [[ -n "$effort" ]] && { _ai_validate_effort "$effort" || { _ai_hint_dirty_session_opt "$sdir" effort; return 1; } }
+
+  # 所有显式、沿用和 profile 值都通过后才落盘。
+  _ai_save_session_opts "$sdir" "$model" "$effort"
+  if [[ -n "$prompt_file" ]]; then
+    cp "$prompt_file" "$sdir/prompt-round-$round.md" || echo "⚠ archive prompt 文件失败,session 仍会继续(详见 stderr)" >&2
+  fi
+  _ai_build_typed_prompt "$prompt" "$inject_file" "$nesting_rule" "$safety"
+  local full_prompt="$_AI_TYPED_FULL_PROMPT"
+
+  local -a extra=() sandbox_extra=()
+  if [[ "$base_cli" == codex ]]; then
+    [[ -n "$model" ]] && extra+=(-m "$model")
+    [[ -n "$effort" ]] && extra+=(-c "model_reasoning_effort=$effort")
+    [[ "$sandbox" == readonly ]] && sandbox_extra+=(--sandbox read-only)
+  else
+    [[ -n "$model_resolved" ]] && extra+=(--model "$model_resolved")
+    [[ -n "$effort" ]] && extra+=(--effort "$effort")
+  fi
+
+  _ai_ledger_record "$base_cli" "$name" "$sid" "$sdir"
+  export AI_CLI_MANAGED_BY=ai-cli-skills
+  export AI_CLI_MANAGED_SID="$sid"
+  _ai_sync_instructions
+  _ai_append_round_header "$sdir/full.log" "resume" "$round" "$full_prompt"
+
+  local skip_flag=$(_ai_skip_git_flag)
+  if [[ "$base_cli" == codex ]]; then
+    (
+      codex exec "${sandbox_extra[@]}" resume ${=skip_flag} "${extra[@]}" -o "$sdir/last.txt" "$sid" "$full_prompt" </dev/null 2>&1 \
+        | tee -a "$sdir/full.log"
+    ) &
+  else
+    (
+      claude -p --output-format stream-json --verbose -r "$sid" "${extra[@]}" "$full_prompt" </dev/null 2>&1 \
+        | _ai_parse_claude_stream "$sdir/last.txt" \
+        | tee -a "$sdir/full.log"
+    ) &
+  fi
+  local pipeline_pid=$! wd_pid=""
+  if [[ "$watchdog" == on ]]; then
+    _ai_watchdog $pipeline_pid "$sdir" "$base_cli" "$name" &
+    wd_pid=$!
+  fi
+  while ps -p $pipeline_pid >/dev/null 2>&1 && [[ ! -f "$sdir/.killed-by-watchdog" ]]; do sleep 0.5; done
+  wait $pipeline_pid 2>/dev/null
+  local exit_code=$?
+  if [[ -f "$sdir/.killed-by-watchdog" ]]; then
+    exit_code=137
+    rm -f "$sdir/.killed-by-watchdog"
+  fi
+  if [[ -n "$wd_pid" ]]; then
+    kill -KILL $wd_pid 2>/dev/null
+    local wd_wait=0
+    while ps -p $wd_pid >/dev/null 2>&1 && (( wd_wait < 6 )); do sleep 0.5; wd_wait=$((wd_wait + 1)); done
+  fi
+  if (( exit_code != 0 )); then
+    echo ""
+    echo "⚠ $base_cli exit code: $exit_code"
+    return $exit_code
+  fi
+
+  echo ""
+  echo "✓ 类型 '$type' session '$type-$name' Round $round 完成"
+}
+
 _agent_ls() {
   [[ -z "${functions[_ai_validate_name]}" ]] && source "${_AI_CLI_SELF:-$HOME/.config/zsh/ai-cli.zsh}" 2>/dev/null
 
@@ -1080,8 +1559,8 @@ _agent_ls() {
     return 1
   fi
   local filter="$1"
-  if [[ -n "$filter" && "$filter" != "codex" && "$filter" != "claude" ]]; then
-    echo "❌ 过滤参数必须是 codex 或 claude(当前: '$filter')"
+  if [[ -n "$filter" ]] && ! [[ "$filter" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    echo "❌ 过滤参数必须是类型名(当前: '$filter')"
     return 1
   fi
 
@@ -1094,17 +1573,39 @@ _agent_ls() {
   local fmt="%-22s  %-50s  %s\n"
   local total=0
 
-  for target_cli in codex claude; do
-    [[ -n "$filter" && "$filter" != "$target_cli" ]] && continue
-
-    # 收集当前 cli 的 sessions
-    local sessions=()
-    for sdir in "$root"/*(N/); do
-      local base=$(basename "$sdir")
-      [[ "$base" == .* ]] && continue
-      local cli="${base%%-*}"
-      [[ "$cli" == "$target_cli" ]] && sessions+=("$sdir")
+  # 已知类型固定排前;profile 类型按名称排序;无法识别的历史前缀最后也照常展示。
+  local -a known=(codex claude)
+  local profile_type
+  for profile_type in ${(@f)$(_ai_valid_profile_names)}; do known+=("$profile_type"); done
+  local -A grouped=() seen_groups=()
+  local -a unknown_groups=()
+  local sdir base group candidate
+  for sdir in "$root"/*(N/); do
+    base=$(basename "$sdir")
+    [[ "$base" == .* ]] && continue
+    group=""
+    # 取最长匹配,避免 web 与 web-review 同时存在时误分组。
+    for candidate in "${known[@]}"; do
+      if [[ "$base" == "$candidate"-* && ${#candidate} -gt ${#group} ]]; then group="$candidate"; fi
     done
+    [[ -z "$group" ]] && group="${base%%-*}"
+    grouped[$group]+="${grouped[$group]:+$'\n'}$sdir"
+    if [[ -z "${seen_groups[$group]}" ]]; then
+      seen_groups[$group]=1
+      if (( ${known[(Ie)$group]} == 0 )); then unknown_groups+=("$group"); fi
+    fi
+  done
+
+  local -a ordered_groups=()
+  for group in "${known[@]}"; do
+    [[ -n "${grouped[$group]}" ]] && ordered_groups+=("$group")
+  done
+  ordered_groups+=("${(on)unknown_groups[@]}")
+
+  local target_cli
+  for target_cli in "${ordered_groups[@]}"; do
+    [[ -n "$filter" && "$filter" != "$target_cli" ]] && continue
+    local sessions=("${(@f)grouped[$target_cli]}")
 
     (( ${#sessions[@]} == 0 )) && continue
 
@@ -1116,7 +1617,7 @@ _agent_ls() {
 
     for sdir in "${sessions[@]}"; do
       local base=$(basename "$sdir")
-      local name="${base#*-}"
+      local name="${base#${target_cli}-}"
       local desc=""
       if [[ -f "$sdir/desc" ]]; then
         desc=$(head -1 "$sdir/desc")
@@ -1161,17 +1662,20 @@ _agent_rm() {
     sdir="$root/$input"
   else
     local matches=()
-    [[ -d "$root/codex-$input" ]] && matches+=("$root/codex-$input")
-    [[ -d "$root/claude-$input" ]] && matches+=("$root/claude-$input")
+    local candidate base
+    for candidate in "$root"/*(N/); do
+      base=$(basename "$candidate")
+      [[ "$base" == *-"$input" ]] && matches+=("$candidate")
+    done
 
     if (( ${#matches[@]} == 0 )); then
       echo "❌ 未找到 '$input' 的 session"
       return 1
     fi
     if (( ${#matches[@]} > 1 )); then
-      echo "⚠ '$input' 在多个 CLI 下都存在:"
+      echo "⚠ '$input' 在多个类型下都存在:"
       for m in "${matches[@]}"; do echo "   $(basename "$m")"; done
-      echo "请显式: agent rm codex-$input 或 agent rm claude-$input"
+      echo "请用上面的完整名执行: agent rm <完整名>"
       return 1
     fi
     sdir="${matches[1]}"
@@ -1184,6 +1688,87 @@ _agent_rm() {
   rm -rf "$sdir"
   echo "✓ 已删除: $(basename "$sdir")"
   [[ -n "$desc" ]] && echo "   desc: $desc"
+}
+
+_agent_type_ls() {
+  [[ -z "${functions[_ai_load_profile]}" ]] && source "${_AI_CLI_SELF:-$HOME/.config/zsh/ai-cli.zsh}" 2>/dev/null
+  if [[ $# -ne 0 ]]; then
+    echo "❌ 用法: agent type ls"
+    return 1
+  fi
+  local fmt="%-18s  %-8s  %-10s  %-8s  %-9s  %s\n"
+  printf "$fmt" "TYPE" "来源" "底座" "MODEL" "EFFORT" "SANDBOX / INJECT"
+  printf -- "%.0s-" {1..88}; echo
+  printf "$fmt" "codex" "内置" "codex" "config" "config" "default / 内置注入"
+  printf "$fmt" "peer" "内置" "claude" "config" "config" "default / 内置注入"
+  printf "$fmt" "claude" "内置别名" "claude" "config" "config" "default / 内置注入"
+
+  local type failed=0
+  for type in ${(@f)$(_ai_profile_names)}; do
+    if ! _ai_load_profile "$type"; then
+      printf "$fmt" "$type" "配置错误" "-" "-" "-" "请修复 profile.conf"
+      failed=1
+      continue
+    fi
+    local inject="无"
+    [[ -f "$_AI_PROFILE_INJECT" ]] && inject="有"
+    printf "$fmt" "$type" "profile" "$_AI_PROFILE_CLI" "${_AI_PROFILE_MODEL:-config}" \
+      "${_AI_PROFILE_EFFORT:-config}" "$_AI_PROFILE_SANDBOX / inject:$inject"
+  done
+  return $failed
+}
+
+_agent_type_show() {
+  [[ -z "${functions[_ai_load_profile]}" ]] && source "${_AI_CLI_SELF:-$HOME/.config/zsh/ai-cli.zsh}" 2>/dev/null
+  if [[ $# -ne 1 ]]; then
+    echo "❌ 用法: agent type show <type>"
+    return 1
+  fi
+  local type="$1"
+  case "$type" in
+    codex)
+      echo "codex 是内置类型:使用 codex 底座,默认注入安全约束并启用 watchdog;session 前缀为 codex-。"
+      return 0
+      ;;
+    peer|claude)
+      echo "peer 是 claude 协作底座的内置主名,claude 是兼容别名;两者共用 claude- session 和同一实现。"
+      return 0
+      ;;
+  esac
+  if [[ ! -f "$(_ai_profiles_dir)/$type/profile.conf" ]]; then
+    echo "❌ 未知类型: $type"
+    echo "   可用类型: $(_ai_available_types_text)"
+    return 1
+  fi
+  _ai_load_profile "$type" || return 1
+  echo "=== $_AI_PROFILE_FILE ==="
+  cat "$_AI_PROFILE_FILE"
+  echo ""
+  echo "=== $_AI_PROFILE_INJECT ==="
+  if [[ -f "$_AI_PROFILE_INJECT" ]]; then
+    cat "$_AI_PROFILE_INJECT"
+  else
+    echo "(无 inject.md)"
+  fi
+}
+
+_agent_type() {
+  [[ -z "${functions[_ai_load_profile]}" ]] && source "${_AI_CLI_SELF:-$HOME/.config/zsh/ai-cli.zsh}" 2>/dev/null
+  local action="$1"; shift 1 2>/dev/null
+  case "$action" in
+    ls|"") _agent_type_ls "$@" ;;
+    show) _agent_type_show "$@" ;;
+    help|-h|--help)
+      echo "用法:"
+      echo "  agent type ls"
+      echo "  agent type show <type>"
+      ;;
+    *)
+      echo "❌ 未知 type 子命令: $action"
+      echo "   可选: ls / show <type>"
+      return 1
+      ;;
+  esac
 }
 
 # 查看 / 管理 incidents
@@ -1274,8 +1859,9 @@ _agent_update() {
 # 用法:
 #   agent codex  new <name> <desc> <prompt> [-m model] [-e effort] [-C dir]
 #   agent codex  c   <name> <prompt> [-m model] [-e effort] [-C dir]
-#   agent claude new <name> <desc> <prompt> [-m model] [-e effort] [-C dir]
-#   agent claude c   <name> <prompt> [-m model] [-e effort] [-C dir]
+#   agent peer   new <name> <desc> <prompt> [-m model] [-e effort] [-C dir]
+#   agent peer   c   <name> <prompt> [-m model] [-e effort] [-C dir]
+#   agent <type> new|c ...          # 声明式 profile 类型
 #   agent ls                       # 列 session
 #   agent rm <name>                # 删 session
 #   agent incidents [<id>]         # 看 watchdog 抓的卡死诊断
@@ -1284,27 +1870,33 @@ _agent_update() {
 
 _agent_usage() {
   cat <<'EOF'
-agent — AI session 管理(codex / claude 非交互调用 + 多 session 并行 + watchdog 防卡死)
+agent — AI session 管理(codex / peer 非交互调用 + 声明式类型档案 + 多 session 并行)
 
 用法:
   起 session(新):
     agent codex  new <name> <desc> (<prompt> | -f file) [-m M] [-e E] [-C dir]
-    agent claude new <name> <desc> (<prompt> | -f file) [-m M] [-e E] [-C dir]
+    agent peer   new <name> <desc> (<prompt> | -f file) [-m M] [-e E] [-C dir]
+    agent <type> new <name> <desc> (<prompt> | -f file) [-m M] [-e E] [-C dir]
 
   续聊:
     agent codex  c <name> (<prompt> | -f file) [-m M] [-e E] [-C dir]
-    agent claude c <name> (<prompt> | -f file) [-m M] [-e E] [-C dir]
+    agent peer   c <name> (<prompt> | -f file) [-m M] [-e E] [-C dir]
+    agent <type> c <name> (<prompt> | -f file) [-m M] [-e E] [-C dir]
 
   管理:
-    agent ls [codex|claude]        列 session(可按 cli 过滤)
+    agent ls [type]                列 session(可按类型过滤)
     agent rm <name>                删 session(name 可短可全)
+    agent type ls                  列内置类型和 profile 类型
+    agent type show <type>         查看类型档案全文
     agent incidents [<id>]         查 watchdog 抓的卡死诊断
     agent update                   一键更新到最新版
 
   帮助:
     agent help                     本帮助
     agent codex help               codex 子命令详细用法(含 -f 文件用法示例)
-    agent claude help              claude 子命令详细用法
+    agent peer help                peer 子命令详细用法
+    agent claude help              peer 的兼容别名(行为完全相同)
+    agent <type> help              profile 类型简要用法
 
 参数:
   <name>     kebab-case 短名(小写字母/数字/连字符)
@@ -1312,7 +1904,7 @@ agent — AI session 管理(codex / claude 非交互调用 + 多 session 并行 
   <prompt>   位置参数 prompt 字符串(短任务用这个,但**不能以 - 开头**——以 - 开头会被当成 flag,
              此时必须走 -f file)
   -m         模型(不传 = 走本机 config,这是默认且推荐)
-               codex  : gpt-5.6-sol | gpt-5.6-luna
+               codex  : gpt-5.6-sol | gpt-5.6-luna | gpt-5.6-terra
                claude : opus | sonnet | fable(均自动用 1M 长上下文变体)
   -e         思考强度(不传 = 走本机 config): low | medium | high | xhigh | max
   -C, --cwd  工作目录(可选,不传 = 当前 PWD)
@@ -1324,6 +1916,11 @@ agent — AI session 管理(codex / claude 非交互调用 + 多 session 并行 
   · new 时传了会记进 session,续聊自动沿用同一档,不会中途换脑子
   · 续聊显式传则覆盖,并成为之后各轮的新默认
   · 传白名单外的值直接报错(不透传给 CLI),要用别的值请改本机 config
+
+类型档案:
+  · 运行时目录: ${AI_PROFILES_DIR:-~/.ai-cli-skills/profiles}
+  · 每个类型由 profile.conf + 可选 inject.md 组成
+  · 先跑 agent type ls 查看当前可用类型
 EOF
 }
 
@@ -1340,7 +1937,7 @@ agent codex — 起 codex session(开发/实现型任务)
   <name>     kebab-case 短名
   <desc>     session 描述,≥ 15 字(仅 new 必填),例: "审查 redis 缓存方案的取舍"
   <prompt>   位置参数 prompt 字符串,**不能以 - 开头**(否则会被当成 flag,此时改走 -f)
-  -m         模型: gpt-5.6-sol | gpt-5.6-luna
+  -m         模型: gpt-5.6-sol | gpt-5.6-luna | gpt-5.6-terra
              不传 = 走 ~/.codex/config.toml(默认且推荐)
   -e         思考强度: low | medium | high | xhigh | max
              不传 = 走 ~/.codex/config.toml
@@ -1367,12 +1964,12 @@ EOF
 
 _agent_claude_help() {
   cat <<'EOF'
-agent claude — 起 claude session(方案/分析/审视型任务)
+agent peer — 起 claude session(方案/分析/审视型任务;claude 是兼容别名)
 
 用法:
-  agent claude new <name> <desc> (<prompt> | -f file) [-m M] [-e E] [-C dir]
-  agent claude c   <name> (<prompt> | -f file) [-m M] [-e E] [-C dir]
-  agent claude help
+  agent peer new <name> <desc> (<prompt> | -f file) [-m M] [-e E] [-C dir]
+  agent peer c   <name> (<prompt> | -f file) [-m M] [-e E] [-C dir]
+  agent peer help
 
 参数:
   <name>     kebab-case 短名
@@ -1399,9 +1996,31 @@ agent claude — 起 claude session(方案/分析/审视型任务)
   cat > ~/tmp/agent-prompt-foo.md <<'EOF_INNER'
   [目标] 复杂的 prompt 里随便用 ` $ {} 都安全
   EOF_INNER
-  agent claude new foo "审查 redis 缓存方案的取舍" -f ~/tmp/agent-prompt-foo.md -C ~/project/myrepo
+  agent peer new foo "审查 redis 缓存方案的取舍" -f ~/tmp/agent-prompt-foo.md -C ~/project/myrepo
 
 -f 文件会自动 archive 到 <session>/prompt.md(new)或 prompt-round-N.md(续聊),方便复盘
+EOF
+}
+
+_agent_typed_help() {
+  [[ -z "${functions[_ai_load_profile]}" ]] && source "${_AI_CLI_SELF:-$HOME/.config/zsh/ai-cli.zsh}" 2>/dev/null
+  local type="$1"
+  _ai_load_profile "$type" || return 1
+  cat <<EOF
+agent $type — profile 类型($_AI_PROFILE_CLI 底座)
+
+用法:
+  agent $type new <name> <desc> (<prompt> | -f file) [-m M] [-e E] [-C dir]
+  agent $type c   <name> (<prompt> | -f file) [-m M] [-e E] [-C dir]
+  agent $type help
+
+默认档位:
+  model=${_AI_PROFILE_MODEL:-本机 config}
+  effort=${_AI_PROFILE_EFFORT:-本机 config}
+  sandbox=$_AI_PROFILE_SANDBOX
+
+显式 -m/-e 优先于 profile;续聊不传时优先沿用 session 记录。
+档案位置: $_AI_PROFILE_FILE
 EOF
 }
 
@@ -1430,7 +2049,7 @@ _agent_dispatch() {
           ;;
       esac
       ;;
-    claude)
+    peer|claude)
       local action="$1"; shift 2>/dev/null
       case "$action" in
         new)                  _agent_claude_new "$@" ;;
@@ -1445,12 +2064,29 @@ _agent_dispatch() {
       ;;
     ls)        _agent_ls "$@" ;;
     rm)        _agent_rm "$@" ;;
+    type)      _agent_type "$@" ;;
     incidents) _agent_incidents "$@" ;;
     update)    _agent_update "$@" ;;
     *)
-      echo "❌ 未知子命令: $sub" >&2
-      echo "   跑 'agent help' 看用法" >&2
-      return 1
+      local profile_file="$(_ai_profiles_dir)/$sub/profile.conf"
+      if [[ -f "$profile_file" ]]; then
+        local action="$1"; shift 1 2>/dev/null
+        case "$action" in
+          new)               _agent_typed_new "$sub" "$@" ;;
+          c)                 _agent_typed_c "$sub" "$@" ;;
+          help|-h|--help|"") _agent_typed_help "$sub" ;;
+          *)
+            echo "❌ 未知类型 '$sub' 子命令: $action" >&2
+            _agent_typed_help "$sub" >&2
+            return 1
+            ;;
+        esac
+      else
+        echo "❌ 未知类型或子命令: $sub" >&2
+        echo "   可用类型: $(_ai_available_types_text)" >&2
+        echo "   跑 'agent help' 看用法" >&2
+        return 1
+      fi
       ;;
   esac
 }

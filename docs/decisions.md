@@ -7,6 +7,7 @@
 
 | 编号 | 标题 | 状态 | 决策日期 | 最近更新 | 标签 |
 |---|---|---|---|---|---|
+| [ADR-012](#adr-012) | 声明式类型档案体系(profile)+ 内置 review/web 类型 + peer 主名 | Accepted | 2026-07-22 | 2026-07-22 | 类型档案 / 提示词注入 / CLI UX |
 | [ADR-011](#adr-011) | 全局账本 + Codex prompt 指纹识别 agent-managed session | Accepted | 2026-07-15 | 2026-07-15 | session 识别 / 跨项目账本 |
 | [ADR-010](#adr-010) | 起 session 前跑可选同步钩子(补上 agent 绕过 zshrc 的缺口) | Accepted | 2026-07-14 | 2026-07-14 | 提示词同步 / 进程模型 |
 | [ADR-009](#adr-009) | `-m`/`-e` 收窄成白名单 + 续聊沿用 + claude 强制 1M 变体 | Accepted | 2026-07-14 | 2026-07-14 | 参数设计 / 防呆 |
@@ -18,6 +19,53 @@
 | [ADR-003](#adr-003) | claude=协作 peer,codex=工具(差异化定位 + safety suffix 差异) | Accepted | 2026-06-22 | 2026-06-23 | 角色定位 / 安全约束 |
 | [ADR-002](#adr-002) | 移除顶层 `agent()` shell 函数,wrapper 是唯一入口 | Accepted | 2026-06-22 | 2026-06-22 | 函数管理 / shell snapshot |
 | [ADR-001](#adr-001) | 统一入口 `agent` 命令,移除 8 个 `ai-*` 老命令 | Accepted | 2026-06-22 | 2026-06-22 | CLI 入口 / UX |
+
+---
+
+<a id="adr-012"></a>
+
+## ADR-012 · 声明式类型档案体系(profile)+ 内置 review/web 类型 + peer 主名
+
+- **状态**：Accepted
+- **决策日期**：2026-07-22
+- **最近更新**：2026-07-22
+- **标签**：类型档案 / 提示词注入 / CLI UX
+- **关联代码**：`shell/ai-cli.zsh`、`profiles/`、`install.sh`、`uninstall.sh`
+- **关联文档**：`README.md`、`profiles/README.md`、`skills/codex-cli/SKILL.md`、`skills/claude-cli/SKILL.md`
+- **关联决策**：`refines ADR-001` / `refines ADR-003` / `updates ADR-009`
+
+### 背景
+
+任务类型从通用开发、协作继续增长到方案审查和网页采集。原实现只有 codex / claude 两个写死入口，注入提示词、模型档位、安全约束和 watchdog 都散落在裸类型实现里；继续硬编码会让每种任务的规则互相污染，也无法独立调整审查或采集提示词。
+
+### 决策
+
+- 用 `profiles/<type>/{profile.conf,inject.md}` 声明类型档案：短配置负责底座、模型、思考强度、安全与运行开关，可选 `inject.md` 负责类型提示词
+- 高频调用平铺为 `agent <type> new/c`；`agent type ls/show` 只承担类型管理，避免高频路径多一层前缀
+- model / effort 优先级固定为：显式 flag > session 记录 > profile > 本机 config；所有值通过底座白名单校验后才落盘
+- prompt 注入顺序固定为：用户 prompt → `inject.md` → nesting rule → safety suffix；各段之间空一行
+- 类型名使用 kebab-case，并拒绝 `ls`、`rm`、`incidents`、`update`、`help`、`type`、`new`、`c`、`codex`、`claude`、`peer` 等保留字
+- 内置 **review**：codex + `gpt-5.6-sol` + `max` + 只读沙箱。防过度思考不是口头提醒，而是输出硬机制：意见必须分阻断 / 建议 / 挑剔三级，每条必须给出具体失败场景，说不出触发路径就不列
+- 内置 **web**：codex + `gpt-5.6-terra` + `medium` + 默认可写沙箱。交付为干净 Markdown 资产，正文图片本地化，并生成覆盖 `manifest.md`；落在 `~/reference/` 时同步维护总索引
+- claude 协作底座的主名改为 `peer`，`claude` 保留为完全等价的兼容别名；session 目录继续使用 `claude-` 前缀，让老 session 无缝续聊
+
+### 后果
+
+**正面**
+- 新任务类型只需增加目录，不再复制 dispatcher 和执行逻辑；提示词可以独立迭代
+- review 的只读权限和可证伪意见格式形成双重护栏，web 的产物结构可直接复用
+- 主调用路径仍短，类型清单、最终配置和注入内容可由命令直接检查
+
+**负面 / 兼容性**
+- profile 是运行时文件，安装或升级必须同步铺设；缺失、配置非法时类型会在本地拒绝启动
+- 类型规则会增加 prompt 长度；`inject.md` 调整也会直接影响新一轮输出，需要像代码一样审查
+- `peer` 与历史 `claude-` session 前缀名称不一致，但这是为兼容老 session 保留的刻意边界
+
+### 替代方案
+
+- **A. 继续硬编码 review / web 新类型**：入口直观。已否决，原因：注入提示词需要频繁微调，每次都要改 shell 实现并发布，且类型越多分支越难维护
+- **B. 使用 `agent type <type> new/c` 全前缀调用**：命令树更规整。已否决，原因：新建和续聊是高频路径，多一层 `type` 增加输入成本；`type` 保留给低频管理命令更清晰
+- **C. 只在调用时用 `-f` 传类型提示词**：不增加 profile 机制。已否决，原因：调用方必须自行找到并拼接正确规则，模型、沙箱和 watchdog 仍无法跟任务类型绑定
 
 ---
 
