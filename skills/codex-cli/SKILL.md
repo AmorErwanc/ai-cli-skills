@@ -383,3 +383,13 @@ agent <type> c <name> "<prompt>" [-m M] [-e E] [-C dir]
 agent review new review-cache "审查缓存改造方案的风险和失败场景" -f ~/tmp/cache-plan.md -C ~/project/myrepo
 agent web new collect-docs "采集官方文档并整理成本地 Markdown 参考资料" "抓取 https://example.com/docs 全模块" -C ~/reference
 ```
+
+### 复盘回写纪律（飞轮）
+
+类型化 session 失败或产出不达标时，主对话必须归因并回答：**"这是一次性事故，还是可固化成规则的系统性坑？"**
+
+- 系统性坑 → 当场修改该类型的 `inject.md`（注入提示词），提交时写明来源场景，再重跑任务
+- 一次性事故 → 直接重试，不动规则
+- 新规则标注来源场景；场景消失（依赖升级/坑已根治）就删规则，不留墓碑
+- 提示词修改永远走 git 提交，不做无人值守的自动改写
+
